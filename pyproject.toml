@@ -41,6 +41,10 @@ cli = ["typer"]
 all = ["psycopg2-binary", "sqlalchemy", "s3fs", "gcsfs", "azure-storage-blob", "typer"]
 
 
+[tool.poetry.scripts]
+eudravigloader = "py_load_eudravigilance.cli:app"
+
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.main"

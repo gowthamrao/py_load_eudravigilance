@@ -92,3 +92,134 @@ def test_full_etl_pipeline_integration(postgres_container: PostgresContainer):
         assert record[0] == "FN"
         assert record[1] == "55"
     conn.close()
+
+
+def test_upsert_logic(postgres_container: PostgresContainer):
+    """
+    Tests the staging and upsert logic for handling new and updated records.
+    """
+    # 1. Setup
+    dsn = postgres_container.get_connection_url().replace("postgresql+psycopg2://", "")
+    conn = postgres_container.get_driver().connect(dsn)
+    table_name = "icsr_upsert_test"
+    with conn.cursor() as cursor:
+        cursor.execute("DROP TABLE IF EXISTS __staging_icsr_upsert_test;")
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name};")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                safetyreportid VARCHAR(255) PRIMARY KEY,
+                receiptdate VARCHAR(255),
+                patientinitials VARCHAR(255)
+            );
+        """)
+    conn.commit()
+    conn.close()
+
+    loader = PostgresLoader(dsn=dsn)
+
+    # 2. Test Case 1: Initial Insert
+    csv_buffer_1 = transform_to_csv_buffer(
+        iter([{"safetyreportid": "UPSERT-01", "receiptdate": "20250101", "patientinitials": "AA"}])
+    )
+
+    staging_table = loader.prepare_load(table_name, "delta")
+    loader.bulk_load_native(csv_buffer_1, staging_table, [])
+    loader.handle_upsert(staging_table, table_name, ["safetyreportid"], "receiptdate")
+
+    # Verify insert
+    conn = postgres_container.get_driver().connect(dsn)
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT patientinitials FROM {table_name} WHERE safetyreportid = 'UPSERT-01'")
+        record = cursor.fetchone()
+        assert record[0] == "AA"
+    conn.close()
+
+    # 3. Test Case 2: Update with newer version
+    csv_buffer_2 = transform_to_csv_buffer(
+        iter([{"safetyreportid": "UPSERT-01", "receiptdate": "20250102", "patientinitials": "BB"}])
+    )
+
+    staging_table = loader.prepare_load(table_name, "delta")
+    loader.bulk_load_native(csv_buffer_2, staging_table, [])
+    loader.handle_upsert(staging_table, table_name, ["safetyreportid"], "receiptdate")
+
+    # Verify update
+    conn = postgres_container.get_driver().connect(dsn)
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT patientinitials FROM {table_name} WHERE safetyreportid = 'UPSERT-01'")
+        record = cursor.fetchone()
+        assert record[0] == "BB"
+    conn.close()
+
+    # 4. Test Case 3: Ignore stale data
+    csv_buffer_3 = transform_to_csv_buffer(
+        iter([{"safetyreportid": "UPSERT-01", "receiptdate": "20250101", "patientinitials": "CC"}]) # Older date
+    )
+
+    staging_table = loader.prepare_load(table_name, "delta")
+    loader.bulk_load_native(csv_buffer_3, staging_table, [])
+    loader.handle_upsert(staging_table, table_name, ["safetyreportid"], "receiptdate")
+
+    # Verify no update
+    conn = postgres_container.get_driver().connect(dsn)
+    with conn.cursor() as cursor:
+        cursor.execute(f"SELECT patientinitials FROM {table_name} WHERE safetyreportid = 'UPSERT-01'")
+        record = cursor.fetchone()
+        assert record[0] == "BB" # Should still be BB
+    conn.close()
+
+
+def test_full_load_truncates_and_reloads(postgres_container: PostgresContainer):
+    """
+    Tests that the 'full' load mode correctly truncates the target table
+    before loading new data.
+    """
+    # 1. Setup
+    dsn = postgres_container.get_connection_url().replace("postgresql+psycopg2://", "")
+    conn = postgres_container.get_driver().connect(dsn)
+    table_name = "icsr_full_load_test"
+    with conn.cursor() as cursor:
+        cursor.execute(f"DROP TABLE IF EXISTS {table_name};")
+        cursor.execute(f"""
+            CREATE TABLE {table_name} (
+                safetyreportid VARCHAR(255) PRIMARY KEY,
+                receiptdate VARCHAR(255),
+                patientinitials VARCHAR(255)
+            );
+        """)
+        # Pre-insert some dummy data that should be truncated
+        cursor.execute(f"INSERT INTO {table_name} (safetyreportid, receiptdate, patientinitials) VALUES ('DUMMY-01', '20000101', 'XX');")
+    conn.commit()
+    conn.close()
+
+    loader = PostgresLoader(dsn=dsn)
+
+    # 2. Run the ETL in 'full' mode
+    csv_buffer = transform_to_csv_buffer(
+        iter([{"safetyreportid": "FULL-LOAD-01", "receiptdate": "20250101", "patientinitials": "ZZ"}])
+    )
+
+    # prepare_load with 'full' mode should truncate the table
+    load_table = loader.prepare_load(table_name, "full")
+    assert load_table == table_name # Should return the target table itself
+
+    # bulk_load_native should load the new data
+    loader.bulk_load_native(csv_buffer, load_table, [])
+
+    # 3. Verify
+    conn = postgres_container.get_driver().connect(dsn)
+    with conn.cursor() as cursor:
+        # Check that the total count is now 1 (only the new record)
+        cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+        count = cursor.fetchone()[0]
+        assert count == 1
+
+        # Check that the dummy data is gone
+        cursor.execute(f"SELECT * FROM {table_name} WHERE safetyreportid = 'DUMMY-01'")
+        assert cursor.fetchone() is None
+
+        # Check that the new data exists
+        cursor.execute(f"SELECT patientinitials FROM {table_name} WHERE safetyreportid = 'FULL-LOAD-01'")
+        record = cursor.fetchone()
+        assert record[0] == "ZZ"
+    conn.close()

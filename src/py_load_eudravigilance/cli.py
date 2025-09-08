@@ -41,33 +41,64 @@ def run(
     table_name: Annotated[
         str, typer.Argument(help="Name of the target database table.")
     ],
+    mode: Annotated[
+        str,
+        typer.Option(
+            help="Load mode: 'delta' for incremental upserts or 'full' for a full refresh."
+        ),
+    ] = "delta",
+    pk: Annotated[
+        str,
+        typer.Option(
+            "--pk",
+            help="The primary key column for the upsert operation (used in delta mode).",
+            default="safetyreportid",
+        ),
+    ],
+    version_key: Annotated[
+        str,
+        typer.Option(
+            "--version-key",
+            help="The column used for versioning (used in delta mode).",
+            default="receiptdate",
+        ),
+    ],
 ):
     """
     Run the full ETL pipeline: Parse, Transform, and Load an XML file.
     """
-    typer.echo(f"Starting ETL process for: {xml_file.name}")
+    typer.echo(f"Starting ETL process for: {xml_file.name} (mode: {mode})")
 
     # 1. Initialize the Loader
     loader = PostgresLoader(dsn=db_dsn)
+    loader.connect()
 
     try:
         # 2. Extract & Transform Phase
         typer.echo("Parsing and transforming XML data...")
         with open(xml_file, "rb") as f:
-            # The parser yields ICSR dictionaries
             icsr_generator = parse_icsr_xml(f)
-            # The transformer converts them to an in-memory CSV buffer
             csv_buffer = transform_to_csv_buffer(icsr_generator)
 
-        # Check if any data was produced
         if csv_buffer.getbuffer().nbytes == 0:
             typer.echo("No ICSR messages found in the file. Nothing to load.")
             raise typer.Exit()
 
         # 3. Load Phase
-        typer.echo(f"Loading data into table: {table_name}")
-        # We don't need to pass columns; the loader uses CSV HEADER
-        loader.bulk_load_native(csv_buffer, table_name, columns=[])
+        typer.echo("Preparing database for loading...")
+        load_table = loader.prepare_load(target_table=table_name, load_mode=mode)
+
+        typer.echo(f"Loading data into table: {load_table}")
+        loader.bulk_load_native(csv_buffer, load_table, columns=[])
+
+        if mode == "delta":
+            typer.echo(f"Merging data from '{load_table}' into '{table_name}'...")
+            loader.handle_upsert(
+                staging_table=load_table,
+                target_table=table_name,
+                primary_keys=[pk],
+                version_key=version_key,
+            )
 
         typer.secho(
             "ETL process completed successfully.", fg=typer.colors.GREEN

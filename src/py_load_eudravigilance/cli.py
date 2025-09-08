@@ -17,7 +17,7 @@ from typing_extensions import Annotated
 from .config import load_config, CONFIG_FILE_NAME
 from .loader import PostgresLoader
 from .parser import parse_icsr_xml
-from .transformer import transform_to_csv_buffer
+from .transformer import transform_and_normalize
 
 # Create a Typer application instance
 app = typer.Typer(
@@ -34,33 +34,12 @@ def run(
             "Overrides the source_uri in the config file."
         ),
     ] = None,
-    table_name: Annotated[
-        str,
-        typer.Option(
-            "--table-name",
-            help="Name of the target database table.",
-        ),
-    ] = "icsr_master",
     mode: Annotated[
         str,
         typer.Option(
             help="Load mode: 'delta' for incremental upserts or 'full' for a full refresh."
         ),
     ] = "delta",
-    pk: Annotated[
-        str,
-        typer.Option(
-            "--pk",
-            help="The primary key column for the upsert operation (used in delta mode).",
-        ),
-    ] = "safetyreportid",
-    version_key: Annotated[
-        str,
-        typer.Option(
-            "--version-key",
-            help="The column used for versioning (used in delta mode).",
-        ),
-    ] = "receiptdate",
     config_file: Annotated[
         Path,
         typer.Option(
@@ -99,7 +78,6 @@ def run(
 
     # 2. Use fsspec to open all files matching the URI
     try:
-        # mode='rb' is important for reading XML files correctly
         input_files = fsspec.open_files(final_source_uri, mode="rb")
         if not input_files:
             typer.secho("No files found at the specified source URI.", fg=typer.colors.YELLOW)
@@ -136,58 +114,40 @@ def run(
                     file_content = f.read()
                     file_hash = hashlib.sha256(file_content).hexdigest()
 
-                # 5a. Check if file has already been processed
                 if file_hash in completed_hashes:
                     typer.secho(f"Skipping already processed file: {file_path}", fg=typer.colors.YELLOW)
                     continue
 
                 file_buffer = io.BytesIO(file_content)
 
-                # 5b. Extract & Transform
-                typer.echo("Parsing and transforming XML data...")
+                # E&T: Parse and normalize the data into multiple buffers
+                typer.echo("Parsing and normalizing XML data...")
                 icsr_generator = parse_icsr_xml(file_buffer)
-                csv_buffer, row_count = transform_to_csv_buffer(icsr_generator)
+                buffers, row_counts = transform_and_normalize(icsr_generator)
 
-                if row_count == 0:
+                # If there are no master records, we can skip the file
+                if not row_counts.get("icsr_master"):
                     typer.echo("No ICSR messages found in file. Skipping.")
-                    # Log as completed with 0 rows
+                    # Log as completed with 0 rows, in its own transaction
                     loader._log_file_status(file_path, file_hash, "completed", 0)
                     loader.manage_transaction("COMMIT")
                     continue
 
-                # 5c. Load Phase (inside a transaction)
-                loader.manage_transaction("BEGIN")
-
-                # Log initial status
-                loader._log_file_status(file_path, file_hash, "running", row_count)
-
-                load_table = loader.prepare_load(target_table=table_name, load_mode=mode)
-                loader.bulk_load_native(csv_buffer, load_table, columns=[])
-
-                if mode == "delta":
-                    typer.echo(f"Merging data from '{load_table}' into '{table_name}'...")
-                    loader.handle_upsert(
-                        staging_table=load_table,
-                        target_table=table_name,
-                        primary_keys=[pk],
-                        version_key=version_key,
-                    )
-
-                # Finalize by logging 'completed' and committing
-                loader._log_file_status(file_path, file_hash, "completed", row_count)
-                loader.manage_transaction("COMMIT")
+                # L: Load the normalized data. The loader handles the transaction.
+                loader.load_normalized_data(
+                    buffers=buffers,
+                    row_counts=row_counts,
+                    load_mode=mode,
+                    file_path=file_path,
+                    file_hash=file_hash,
+                )
 
                 files_processed += 1
                 typer.secho(f"Successfully processed file: {file_path}", fg=typer.colors.GREEN)
 
             except Exception as e:
-                # Rollback transaction and log failure
-                loader.manage_transaction("ROLLBACK")
-                if file_hash:
-                    # This update runs in its own transaction
-                    loader._log_file_status(file_path, file_hash, "failed")
-                    loader.manage_transaction("COMMIT")
-
+                # The loader handles its own rollback and failure logging.
+                # The CLI just needs to report the failure and continue.
                 typer.secho(f"Failed to process file {file_path}: {e}", fg=typer.colors.RED)
                 files_failed += 1
 
@@ -195,6 +155,8 @@ def run(
             f"\nETL process finished. {files_processed} files processed successfully, {files_failed} failed.",
             fg=typer.colors.GREEN if files_failed == 0 else typer.colors.YELLOW,
         )
+        if files_failed > 0:
+            raise typer.Exit(code=1)
 
     finally:
         # Ensure the database connection is closed

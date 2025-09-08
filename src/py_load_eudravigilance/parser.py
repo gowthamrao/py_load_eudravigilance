@@ -71,7 +71,38 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
             # D.5: Sex
             patient_sex = _find_text(patient_elem, "hl7:patientsex")
 
-        # Yield a dictionary representing the parsed ICSR.
+        # E.i: Reaction(s) / Event(s)
+        reactions_list = []
+        for reaction_elem in report_elem.findall("hl7:reaction", namespaces=NAMESPACES):
+            reactions_list.append(
+                {
+                    "primarysourcereaction": _find_text(
+                        reaction_elem, "hl7:primarysourcereaction"
+                    ),
+                    "reactionmeddrapt": _find_text(reaction_elem, "hl7:reactionmeddrapt"),
+                }
+            )
+
+        # G.k: Drug(s)
+        drugs_list = []
+        for drug_elem in report_elem.findall("hl7:drug", namespaces=NAMESPACES):
+            drugs_list.append(
+                {
+                    "drugcharacterization": _find_text(
+                        drug_elem, "hl7:drugcharacterization"
+                    ),
+                    "medicinalproduct": _find_text(drug_elem, "hl7:medicinalproduct"),
+                    "drugstructuredosagenumb": _find_text(
+                        drug_elem, "hl7:drugstructuredosagenumb"
+                    ),
+                    "drugstructuredosageunit": _find_text(
+                        drug_elem, "hl7:drugstructuredosageunit"
+                    ),
+                    "drugdosagetext": _find_text(drug_elem, "hl7:drugdosagetext"),
+                }
+            )
+
+        # Yield a dictionary representing the parsed ICSR with nested lists.
         if safety_report_id:
             yield {
                 "safetyreportid": safety_report_id,
@@ -79,6 +110,8 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
                 "patientinitials": patient_initials,
                 "patientonsetage": patient_age,
                 "patientsex": patient_sex,
+                "reactions": reactions_list,
+                "drugs": drugs_list,
             }
 
         # Crucial for memory efficiency: clear the element from memory.

@@ -10,42 +10,89 @@ import io
 from typing import Any, Dict, Generator, IO
 
 
-from typing import Tuple
+from typing import Dict, Tuple
 
-def transform_to_csv_buffer(
+def transform_and_normalize(
     icsr_generator: Generator[Dict[str, Any], None, None]
-) -> Tuple[io.StringIO, int]:
+) -> Tuple[Dict[str, io.StringIO], Dict[str, int]]:
     """
-    Transforms a generator of ICSR dictionaries into an in-memory CSV buffer.
+    Transforms and normalizes a generator of ICSR dictionaries into multiple
+    in-memory CSV buffers, one for each target relational table.
 
-    This function creates an intermediate representation of the data that is
-    optimized for native bulk loading utilities like PostgreSQL's COPY command.
+    This function implements the "T" phase of the ETL, creating normalized,
+    linkable data streams suitable for bulk loading.
 
     Args:
-        icsr_generator: A generator that yields dictionaries, each representing
-                        a parsed ICSR.
+        icsr_generator: A generator yielding nested dictionaries from the parser.
 
     Returns:
         A tuple containing:
-        - An `io.StringIO` object with the data in CSV format (with header).
-        - An integer count of the number of ICSRs processed.
+        - A dictionary mapping table names to `io.StringIO` CSV buffers.
+        - A dictionary mapping table names to their respective row counts.
     """
-    buffer = io.StringIO()
-    writer = None
-    row_count = 0
+    # Define the schemas for our target tables
+    schemas = {
+        "icsr_master": ["safetyreportid", "receiptdate"],
+        "patient_characteristics": [
+            "safetyreportid",
+            "patientinitials",
+            "patientonsetage",
+            "patientsex",
+        ],
+        "reactions": ["safetyreportid", "primarysourcereaction", "reactionmeddrapt"],
+        "drugs": [
+            "safetyreportid",
+            "drugcharacterization",
+            "medicinalproduct",
+            "drugstructuredosagenumb",
+            "drugstructuredosageunit",
+            "drugdosagetext",
+        ],
+    }
 
+    # Initialize buffers, writers, and counts for each table
+    buffers = {table: io.StringIO() for table in schemas}
+    writers = {
+        table: csv.DictWriter(buffers[table], fieldnames=fields)
+        for table, fields in schemas.items()
+    }
+    row_counts = {table: 0 for table in schemas}
+
+    # Write headers to all buffers
+    for writer in writers.values():
+        writer.writeheader()
+
+    # Process each ICSR from the parser
     for icsr_dict in icsr_generator:
-        row_count += 1
-        if writer is None:
-            # First item: Create the DictWriter and write the header.
-            # The fieldnames are derived from the keys of the first dictionary.
-            fieldnames = list(icsr_dict.keys())
-            writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-            writer.writeheader()
+        safetyreportid = icsr_dict.get("safetyreportid")
+        if not safetyreportid:
+            continue  # Skip if the core identifier is missing
 
-        # Write the current row to the buffer.
-        writer.writerow(icsr_dict)
+        # 1. Populate the master and patient tables (one-to-one)
+        master_row = {k: icsr_dict.get(k) for k in schemas["icsr_master"]}
+        writers["icsr_master"].writerow(master_row)
+        row_counts["icsr_master"] += 1
 
-    # Ensure the buffer's position is at the beginning before it's read.
-    buffer.seek(0)
-    return buffer, row_count
+        patient_row = {k: icsr_dict.get(k) for k in schemas["patient_characteristics"]}
+        patient_row["safetyreportid"] = safetyreportid # Add foreign key
+        writers["patient_characteristics"].writerow(patient_row)
+        row_counts["patient_characteristics"] += 1
+
+
+        # 2. Populate the reactions table (one-to-many)
+        for reaction in icsr_dict.get("reactions", []):
+            reaction["safetyreportid"] = safetyreportid  # Add foreign key
+            writers["reactions"].writerow(reaction)
+            row_counts["reactions"] += 1
+
+        # 3. Populate the drugs table (one-to-many)
+        for drug in icsr_dict.get("drugs", []):
+            drug["safetyreportid"] = safetyreportid  # Add foreign key
+            writers["drugs"].writerow(drug)
+            row_counts["drugs"] += 1
+
+    # Rewind all buffers to be ready for reading
+    for buffer in buffers.values():
+        buffer.seek(0)
+
+    return buffers, row_counts

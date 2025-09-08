@@ -1,55 +1,99 @@
+"""
+Unit tests for the Transformer module.
+"""
 import io
-import pytest
-from py_load_eudravigilance.transformer import transform_to_csv_buffer
+
+from py_load_eudravigilance.transformer import transform_and_normalize
+
+# A sample nested dictionary, mimicking the output of the enhanced parser.
+SAMPLE_ICSR_1 = {
+    "safetyreportid": "TEST-CASE-001",
+    "receiptdate": "20240101",
+    "patientinitials": "FN",
+    "patientonsetage": "55",
+    "patientsex": "1",
+    "reactions": [
+        {"primarysourcereaction": "Nausea", "reactionmeddrapt": "Nausea"},
+        {"primarysourcereaction": "Headache", "reactionmeddrapt": "Headache"},
+    ],
+    "drugs": [
+        {
+            "drugcharacterization": "1",
+            "medicinalproduct": "DrugA",
+            "drugstructuredosagenumb": "10",
+            "drugstructuredosageunit": "032",
+            "drugdosagetext": "10 mg",
+        }
+    ],
+}
+
+# A second sample ICSR to test multiple records.
+SAMPLE_ICSR_2 = {
+    "safetyreportid": "TEST-CASE-002",
+    "receiptdate": "20240102",
+    "patientinitials": "LW",
+    "patientonsetage": "78",
+    "patientsex": "2",
+    "reactions": [
+        {"primarysourcereaction": "Rash", "reactionmeddrapt": "Rash"},
+    ],
+    "drugs": [], # Test case with no drugs
+}
 
 
-def test_transform_to_csv_buffer_with_data():
+def test_transform_and_normalize():
     """
-    Tests that the transformer correctly converts a list of dicts to a CSV buffer.
+    Tests the main transformation and normalization logic.
+
+    It verifies that:
+    1. The function returns the correct structure (dicts of buffers and counts).
+    2. It creates buffers for all expected tables.
+    3. The content of each buffer (headers and rows) is correct.
+    4. Foreign keys (`safetyreportid`) are correctly added to child records.
+    5. Row counts are accurate.
     """
-    # Sample data mimicking the output of the parser
-    sample_data = [
-        {
-            "safetyreportid": "CASE-1",
-            "patientinitials": "AB",
-            "patientsex": "1",
-        },
-        {
-            "safetyreportid": "CASE-2",
-            "patientinitials": "CD",
-            "patientsex": None,  # Important to test None handling
-        },
+    # The transformer expects a generator.
+    icsr_generator = (i for i in [SAMPLE_ICSR_1, SAMPLE_ICSR_2])
+
+    # Run the transformation
+    buffers, row_counts = transform_and_normalize(icsr_generator)
+
+    # 1. Check the overall structure and keys
+    expected_tables = [
+        "icsr_master",
+        "patient_characteristics",
+        "reactions",
+        "drugs",
     ]
+    assert set(buffers.keys()) == set(expected_tables)
+    assert set(row_counts.keys()) == set(expected_tables)
 
-    # The function expects a generator
-    data_generator = (item for item in sample_data)
+    # 2. Check row counts
+    assert row_counts["icsr_master"] == 2
+    assert row_counts["patient_characteristics"] == 2
+    assert row_counts["reactions"] == 3  # 2 from first case, 1 from second
+    assert row_counts["drugs"] == 1
 
-    # Call the function under test
-    csv_buffer, row_count = transform_to_csv_buffer(data_generator)
+    # 3. Check the content of each buffer
+    # Icsr_master table
+    master_content = buffers["icsr_master"].read()
+    assert "safetyreportid,receiptdate" in master_content
+    assert "TEST-CASE-001,20240101" in master_content
+    assert "TEST-CASE-002,20240102" in master_content
 
-    # 1. Verify the return types and values
-    assert isinstance(csv_buffer, io.StringIO)
-    assert row_count == 2
+    # Reactions table
+    reactions_content = buffers["reactions"].read()
+    assert "safetyreportid,primarysourcereaction,reactionmeddrapt" in reactions_content
+    assert "TEST-CASE-001,Nausea,Nausea" in reactions_content
+    assert "TEST-CASE-001,Headache,Headache" in reactions_content
+    assert "TEST-CASE-002,Rash,Rash" in reactions_content
 
-    # 2. Verify the content
-    expected_csv = (
-        "safetyreportid,patientinitials,patientsex\r\n"
-        "CASE-1,AB,1\r\n"
-        "CASE-2,CD,\r\n"
+    # Drugs table
+    drugs_content = buffers["drugs"].read()
+    assert (
+        "safetyreportid,drugcharacterization,medicinalproduct,drugstructuredosagenumb,drugstructuredosageunit,drugdosagetext"
+        in drugs_content
     )
-    assert csv_buffer.read() == expected_csv
-
-
-def test_transform_to_csv_buffer_empty_input():
-    """
-    Tests that the transformer handles an empty generator correctly.
-    """
-    # Call the function with an empty generator
-    csv_buffer, row_count = transform_to_csv_buffer(iter([]))
-
-    # 1. Verify the return types and values
-    assert isinstance(csv_buffer, io.StringIO)
-    assert row_count == 0
-
-    # 2. Verify the content is empty
-    assert csv_buffer.read() == ""
+    assert "TEST-CASE-001,1,DrugA,10,032,10 mg" in drugs_content
+    # Ensure no rows from the second case are present
+    assert "TEST-CASE-002" not in drugs_content

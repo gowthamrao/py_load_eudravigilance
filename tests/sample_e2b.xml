@@ -26,6 +26,26 @@
         <patientonsetage>55</patientonsetage>
         <patientsex>1</patientsex>
       </patient>
+      <reaction>
+        <primarysourcereaction>Nausea</primarysourcereaction>
+        <reactionmeddrapt>Nausea</reactionmeddrapt>
+      </reaction>
+      <reaction>
+        <primarysourcereaction>Headache</primarysourcereaction>
+        <reactionmeddrapt>Headache</reactionmeddrapt>
+      </reaction>
+      <drug>
+        <drugcharacterization>1</drugcharacterization>
+        <medicinalproduct>DrugA</medicinalproduct>
+        <drugstructuredosagenumb>10</drugstructuredosagenumb>
+        <drugstructuredosageunit>032</drugstructuredosageunit>
+        <drugdosagetext>10 mg</drugdosagetext>
+      </drug>
+      <drug>
+        <drugcharacterization>2</drugcharacterization>
+        <medicinalproduct>DrugB</medicinalproduct>
+        <drugdosagetext>50 mg</drugdosagetext>
+      </drug>
     </safetyreport>
   </ichicsrMessage>
   <ichicsrMessage>

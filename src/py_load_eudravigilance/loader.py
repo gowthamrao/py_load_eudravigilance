@@ -186,46 +186,39 @@ class PostgresLoader(LoaderInterface):
         staging_table: str,
         target_table: str,
         primary_keys: List[str],
-        version_key: str,
+        version_key: str | None,
     ) -> None:
         """
-        Merges data from the staging table into the target table.
-        This method does NOT commit the transaction.
+        Merges data from the staging table into the target table using raw SQL
+        for robustness. This method does NOT commit the transaction.
         """
         if self.conn is None or self.conn.closed:
             self.connect()
 
-        metadata = sqlalchemy.MetaData()
-        target_table_obj = sqlalchemy.Table(
-            target_table, metadata, autoload_with=self.engine
-        )
+        # Introspect the target table to get all column names
+        inspector = sqlalchemy.inspect(self.engine)
+        all_columns = [col["name"] for col in inspector.get_columns(target_table)]
+        update_cols = [col for col in all_columns if col not in primary_keys]
 
-        update_cols = [
-            c.name for c in target_table_obj.columns if c.name not in primary_keys
-        ]
+        # Construct the parts of the raw SQL query
+        pk_string = ", ".join(primary_keys)
+        update_statements = ", ".join([f"{col} = EXCLUDED.{col}" for col in update_cols])
 
-        insert_stmt = pg_insert(target_table_obj).from_select(
-            [c.name for c in target_table_obj.columns],
-            sqlalchemy.text(f"SELECT * FROM {staging_table}"),
-        )
+        sql = f"""
+            INSERT INTO {target_table}
+            SELECT * FROM {staging_table}
+            ON CONFLICT ({pk_string}) DO UPDATE
+            SET {update_statements}
+        """
 
-        update_dict = {
-            col: getattr(insert_stmt.excluded, col) for col in update_cols
-        }
-
-        on_conflict_stmt = insert_stmt.on_conflict_do_update(
-            index_elements=primary_keys,
-            set_=update_dict,
-            where=getattr(target_table_obj.c, version_key)
-            < getattr(insert_stmt.excluded, version_key),
-        )
-
-        compiled = on_conflict_stmt.compile(
-            self.engine, compile_kwargs={"literal_binds": False}
-        )
+        # Add the version-checking WHERE clause if a version_key is provided
+        if version_key:
+            sql += f" WHERE {target_table}.{version_key} < EXCLUDED.{version_key};"
+        else:
+            sql += ";"
 
         with self.conn.cursor() as cursor:
-            cursor.execute(str(compiled), compiled.params)
+            cursor.execute(sql)
         # DO NOT COMMIT HERE
         print(f"Upsert completed from '{staging_table}' to '{target_table}'.")
 
@@ -330,3 +323,58 @@ class PostgresLoader(LoaderInterface):
         with self.engine.connect() as connection:
             result = connection.execute(query)
             return {row[0] for row in result}
+
+    def load_normalized_data(
+        self,
+        buffers: Dict[str, IOBase],
+        row_counts: Dict[str, int],
+        load_mode: str,
+        file_path: str,
+        file_hash: str,
+    ) -> None:
+        """
+        Orchestrates the loading of multiple normalized data buffers into their
+        respective tables within a single transaction.
+        """
+        TABLE_METADATA = {
+            "icsr_master": {"pk": ["safetyreportid"], "version_key": "receiptdate"},
+            "patient_characteristics": {"pk": ["safetyreportid"], "version_key": None},
+            "reactions": {"pk": ["safetyreportid", "reactionmeddrapt"], "version_key": None},
+            "drugs": {"pk": ["safetyreportid", "medicinalproduct"], "version_key": None},
+        }
+
+        self.manage_transaction("BEGIN")
+        try:
+            total_rows = sum(row_counts.values())
+            self._log_file_status(file_path, file_hash, "running", total_rows)
+
+            for table_name, buffer in buffers.items():
+                if row_counts.get(table_name, 0) > 0:
+                    print(f"Processing table: {table_name}")
+                    metadata = TABLE_METADATA.get(table_name)
+                    if not metadata:
+                        raise ValueError(f"No metadata defined for table {table_name}")
+
+                    staging_table = self.prepare_load(
+                        target_table=table_name, load_mode=load_mode
+                    )
+                    self.bulk_load_native(buffer, staging_table, columns=[])
+
+                    if load_mode == "delta":
+                        self.handle_upsert(
+                            staging_table=staging_table,
+                            target_table=table_name,
+                            primary_keys=metadata["pk"],
+                            version_key=metadata["version_key"],
+                        )
+
+            self._log_file_status(file_path, file_hash, "completed", total_rows)
+            self.manage_transaction("COMMIT")
+
+        except Exception as e:
+            print(f"Error during normalized load for file {file_path}. Rolling back.")
+            self.manage_transaction("ROLLBACK")
+            # Log failure in a separate transaction
+            self._log_file_status(file_path, file_hash, "failed")
+            self.manage_transaction("COMMIT")
+            raise e

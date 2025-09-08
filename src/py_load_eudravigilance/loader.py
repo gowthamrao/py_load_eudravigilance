@@ -79,6 +79,14 @@ class LoaderInterface(ABC):
         """
         raise NotImplementedError
 
+    @abstractmethod
+    def create_metadata_tables(self) -> None:
+        """
+        Creates the necessary metadata tables (e.g., for file history)
+        in the target database if they don't already exist.
+        """
+        raise NotImplementedError
+
 
 class PostgresLoader(LoaderInterface):
     """
@@ -124,15 +132,9 @@ class PostgresLoader(LoaderInterface):
 
     def prepare_load(self, target_table: str, load_mode: str) -> str:
         """
-        Prepares the database for loading, creating a staging table for 'delta'
-        loads or truncating the table for 'full' loads.
-
-        Args:
-            target_table: The name of the final destination table.
-            load_mode: The loading mode ('full' or 'delta').
-
-        Returns:
-            The name of the table to load into (staging or target).
+        Prepares the database for loading. For 'delta' mode, this is part of
+        the file transaction. For 'full' mode, this is a separate, committed
+        action before processing begins.
         """
         if self.conn is None or self.conn.closed:
             self.connect()
@@ -141,12 +143,14 @@ class PostgresLoader(LoaderInterface):
             with self.conn.cursor() as cursor:
                 cursor.execute(f"TRUNCATE TABLE {target_table};")
                 print(f"Table '{target_table}' truncated for full load.")
+            # A full load truncate should be committed immediately.
             self.conn.commit()
             return target_table
 
         elif load_mode == "delta":
             staging_table_name = f"__staging_{target_table}"
             with self.conn.cursor() as cursor:
+                # This runs inside a transaction, so the temp table is transactional.
                 cursor.execute(f"DROP TABLE IF EXISTS {staging_table_name};")
                 create_sql = (
                     f"CREATE TEMP TABLE {staging_table_name} "
@@ -154,7 +158,7 @@ class PostgresLoader(LoaderInterface):
                 )
                 cursor.execute(create_sql)
                 print(f"Temporary staging table '{staging_table_name}' created.")
-            self.conn.commit()
+            # DO NOT COMMIT HERE - this is part of the per-file transaction
             return staging_table_name
 
         else:
@@ -165,14 +169,7 @@ class PostgresLoader(LoaderInterface):
     ) -> None:
         """
         Loads data from an in-memory buffer into a PostgreSQL table using COPY.
-
-        Args:
-            data_stream: A file-like object (e.g., io.StringIO) containing
-                         the data in CSV format with a header.
-            target_table: The name of the database table to load data into.
-                          This can be a staging or a final table.
-            columns: A list of column names (currently unused, as the CSV
-                     header is expected to match the table structure).
+        This method does NOT commit the transaction.
         """
         if self.conn is None or self.conn.closed:
             self.connect()
@@ -181,7 +178,7 @@ class PostgresLoader(LoaderInterface):
 
         with self.conn.cursor() as cursor:
             cursor.copy_expert(sql, data_stream)
-        self.conn.commit()
+        # DO NOT COMMIT HERE
         print(f"Successfully loaded data into '{target_table}'.")
 
     def handle_upsert(
@@ -192,15 +189,8 @@ class PostgresLoader(LoaderInterface):
         version_key: str,
     ) -> None:
         """
-        Merges data from the staging table into the target table using an
-        UPSERT (INSERT ... ON CONFLICT DO UPDATE) strategy.
-
-        Args:
-            staging_table: The name of the staging table containing new data.
-            target_table: The name of the final destination table.
-            primary_keys: A list of column names that form the primary key.
-            version_key: The column name used for version comparison to prevent
-                         updating with stale data.
+        Merges data from the staging table into the target table.
+        This method does NOT commit the transaction.
         """
         if self.conn is None or self.conn.closed:
             self.connect()
@@ -210,20 +200,15 @@ class PostgresLoader(LoaderInterface):
             target_table, metadata, autoload_with=self.engine
         )
 
-        # The columns to update are all columns except the primary keys
         update_cols = [
             c.name for c in target_table_obj.columns if c.name not in primary_keys
         ]
 
-        # Construct the INSERT statement from the staging table
         insert_stmt = pg_insert(target_table_obj).from_select(
             [c.name for c in target_table_obj.columns],
-            sqlalchemy.text(f"SELECT * FROM {staging_table}")
+            sqlalchemy.text(f"SELECT * FROM {staging_table}"),
         )
 
-        # Define the ON CONFLICT behavior
-        # .excluded is a special SQLAlchemy object that refers to the row
-        # that was proposed for insertion.
         update_dict = {
             col: getattr(insert_stmt.excluded, col) for col in update_cols
         }
@@ -231,19 +216,17 @@ class PostgresLoader(LoaderInterface):
         on_conflict_stmt = insert_stmt.on_conflict_do_update(
             index_elements=primary_keys,
             set_=update_dict,
-            where=getattr(target_table_obj.c, version_key) < getattr(insert_stmt.excluded, version_key)
+            where=getattr(target_table_obj.c, version_key)
+            < getattr(insert_stmt.excluded, version_key),
         )
 
-        # Compile the statement with the engine to get the correct dialect
-        # and extract the parameters for psycopg2
         compiled = on_conflict_stmt.compile(
             self.engine, compile_kwargs={"literal_binds": False}
         )
 
         with self.conn.cursor() as cursor:
             cursor.execute(str(compiled), compiled.params)
-
-        self.conn.commit()
+        # DO NOT COMMIT HERE
         print(f"Upsert completed from '{staging_table}' to '{target_table}'.")
 
     def manage_transaction(self, action: str) -> None:
@@ -261,3 +244,89 @@ class PostgresLoader(LoaderInterface):
             self.conn.rollback()
         else:
             raise ValueError(f"Unknown transaction action: {action}")
+
+    def create_metadata_tables(self) -> None:
+        """
+        Creates the `etl_file_history` table in the database if it does not exist.
+        """
+        metadata = sqlalchemy.MetaData()
+        sqlalchemy.Table(
+            "etl_file_history",
+            metadata,
+            sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
+            sqlalchemy.Column("filename", sqlalchemy.String(255), nullable=False),
+            sqlalchemy.Column(
+                "file_hash", sqlalchemy.String(64), nullable=False, unique=True
+            ),
+            sqlalchemy.Column("status", sqlalchemy.String(50), nullable=False),
+            sqlalchemy.Column(
+                "load_timestamp",
+                sqlalchemy.DateTime,
+                server_default=sqlalchemy.func.now(),
+            ),
+            sqlalchemy.Column("rows_processed", sqlalchemy.Integer),
+        )
+        metadata.create_all(self.engine)
+        print("Metadata tables created or already exist.")
+
+    def _log_file_status(
+        self,
+        filename: str,
+        file_hash: str,
+        status: str,
+        rows_processed: int | None = None,
+    ) -> None:
+        """
+        Logs or updates the status of a file in the history table.
+        This method does NOT commit the transaction.
+        """
+        if self.conn is None or self.conn.closed:
+            self.connect()
+
+        metadata = sqlalchemy.MetaData()
+        history_table = sqlalchemy.Table(
+            "etl_file_history", metadata, autoload_with=self.engine
+        )
+
+        stmt = pg_insert(history_table).values(
+            filename=filename,
+            file_hash=file_hash,
+            status=status,
+            rows_processed=rows_processed,
+            load_timestamp=sqlalchemy.func.now(),
+        )
+
+        update_stmt = stmt.on_conflict_do_update(
+            index_elements=["file_hash"],
+            set_={
+                "status": status,
+                "rows_processed": rows_processed,
+                "load_timestamp": sqlalchemy.func.now(),
+            },
+        )
+
+        # Execute using the main connection to be part of the transaction
+        compiled = update_stmt.compile(self.engine)
+        with self.conn.cursor() as cursor:
+            cursor.execute(str(compiled), compiled.params)
+        # DO NOT COMMIT HERE
+
+
+    def get_completed_file_hashes(self) -> set[str]:
+        """
+        Retrieves a set of file hashes for all files that have been
+        successfully processed ('completed' status).
+
+        Returns:
+            A set of SHA-256 hash strings.
+        """
+        metadata = sqlalchemy.MetaData()
+        history_table = sqlalchemy.Table(
+            "etl_file_history", metadata, autoload_with=self.engine
+        )
+        query = sqlalchemy.select(history_table.c.file_hash).where(
+            history_table.c.status == "completed"
+        )
+        with self.engine.connect() as connection:
+            result = connection.execute(query)
+            return {row[0] for row in result}

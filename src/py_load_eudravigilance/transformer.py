@@ -10,9 +10,11 @@ import io
 from typing import Any, Dict, Generator, IO
 
 
+from typing import Tuple
+
 def transform_to_csv_buffer(
     icsr_generator: Generator[Dict[str, Any], None, None]
-) -> io.StringIO:
+) -> Tuple[io.StringIO, int]:
     """
     Transforms a generator of ICSR dictionaries into an in-memory CSV buffer.
 
@@ -24,13 +26,16 @@ def transform_to_csv_buffer(
                         a parsed ICSR.
 
     Returns:
-        An `io.StringIO` object containing the data in CSV format with a header.
-        If the generator is empty, the buffer will also be empty.
+        A tuple containing:
+        - An `io.StringIO` object with the data in CSV format (with header).
+        - An integer count of the number of ICSRs processed.
     """
     buffer = io.StringIO()
     writer = None
+    row_count = 0
 
     for icsr_dict in icsr_generator:
+        row_count += 1
         if writer is None:
             # First item: Create the DictWriter and write the header.
             # The fieldnames are derived from the keys of the first dictionary.
@@ -43,4 +48,4 @@ def transform_to_csv_buffer(
 
     # Ensure the buffer's position is at the beginning before it's read.
     buffer.seek(0)
-    return buffer
+    return buffer, row_count

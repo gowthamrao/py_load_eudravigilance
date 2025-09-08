@@ -28,8 +28,12 @@ isort = "^5.12.0"
 mypy = "^1.5.1"
 pytest-cov = "^4.1.0"
 testcontainers = {version = "^3.7.1", extras = ["postgres"]}
-# For integration tests
+
+# For application code under test
+typer = {version = "^0.9.0"}
+sqlalchemy = {version = "^2.0.22"}
 psycopg2-binary = "^2.9.9"
+fsspec = {version = "^2023.10.0"}
 
 
 [tool.poetry.extras]

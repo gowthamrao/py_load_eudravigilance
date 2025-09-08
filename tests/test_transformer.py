@@ -25,10 +25,11 @@ def test_transform_to_csv_buffer_with_data():
     data_generator = (item for item in sample_data)
 
     # Call the function under test
-    csv_buffer = transform_to_csv_buffer(data_generator)
+    csv_buffer, row_count = transform_to_csv_buffer(data_generator)
 
-    # 1. Verify the return type
+    # 1. Verify the return types and values
     assert isinstance(csv_buffer, io.StringIO)
+    assert row_count == 2
 
     # 2. Verify the content
     expected_csv = (
@@ -44,10 +45,11 @@ def test_transform_to_csv_buffer_empty_input():
     Tests that the transformer handles an empty generator correctly.
     """
     # Call the function with an empty generator
-    csv_buffer = transform_to_csv_buffer(iter([]))
+    csv_buffer, row_count = transform_to_csv_buffer(iter([]))
 
-    # 1. Verify the return type
+    # 1. Verify the return types and values
     assert isinstance(csv_buffer, io.StringIO)
+    assert row_count == 0
 
     # 2. Verify the content is empty
     assert csv_buffer.read() == ""

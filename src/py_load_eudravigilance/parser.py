@@ -29,44 +29,61 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
         A dictionary for each parsed ICSR, containing a subset of key fields.
     """
     # Use iterparse to process the XML iteratively. We listen for the 'end'
-    # event on the 'ichicsrMessage' tag. This means the element is fully
-    # available in memory, but we haven't read the rest of the file yet.
-    # The tag must be namespace-qualified.
+    # event on the 'ichicsrMessage' tag.
     context = etree.iterparse(
         xml_source, events=("end",), tag=f"{{{NAMESPACES['hl7']}}}ichicsrMessage"
     )
 
     for _, elem in context:
-        # For each 'ichicsrMessage' element found, extract the required data fields.
-        # We use .find() with the namespace map. The './/' prefix ensures we
-        # find the element regardless of its depth within the current context.
+        # Helper function to safely find an element and return its text content.
+        def _find_text(start_element, xpath, default=None):
+            found_elem = start_element.find(xpath, namespaces=NAMESPACES)
+            return found_elem.text if found_elem is not None else default
+
+        # All data is within the <safetyreport> tag.
+        report_elem = elem.find("hl7:safetyreport", namespaces=NAMESPACES)
+        if report_elem is None:
+            # If there's no safetyreport, skip this ichicsrMessage
+            elem.clear()
+            while elem.getprevious() is not None:
+                del elem.getparent()[0]
+            continue
 
         # C.1.1: Safety Report Unique Identifier
-        safety_report_id_elem = elem.find(".//hl7:safetyreportid", namespaces=NAMESPACES)
-        safety_report_id = (
-            safety_report_id_elem.text if safety_report_id_elem is not None else None
-        )
+        safety_report_id = _find_text(report_elem, ".//hl7:safetyreportid")
 
-        # C.1.5: Date of Most Recent Information
-        # This is a simplification; a real file might have multiple dates.
-        # We'll look for 'receiptdate' as a proxy.
-        receipt_date_elem = elem.find(".//hl7:receiptdate", namespaces=NAMESPACES)
-        receipt_date = receipt_date_elem.text if receipt_date_elem is not None else None
+        # C.1.5: Date of Most Recent Information (using receiptdate as a proxy)
+        receipt_date = _find_text(report_elem, ".//hl7:receiptdate")
+
+        # D: Patient Characteristics
+        patient_elem = report_elem.find("hl7:patient", namespaces=NAMESPACES)
+        patient_initials = None
+        patient_age = None
+        patient_sex = None
+
+        if patient_elem is not None:
+            # D.1: Patient Initials
+            patient_initials = _find_text(patient_elem, "hl7:patientinitials")
+
+            # D.2.2: Age (using patientonsetage as the field)
+            patient_age = _find_text(patient_elem, "hl7:patientonsetage")
+
+            # D.5: Sex
+            patient_sex = _find_text(patient_elem, "hl7:patientsex")
 
         # Yield a dictionary representing the parsed ICSR.
-        # We only yield if the primary identifier is present.
         if safety_report_id:
             yield {
                 "safetyreportid": safety_report_id,
                 "receiptdate": receipt_date,
+                "patientinitials": patient_initials,
+                "patientonsetage": patient_age,
+                "patientsex": patient_sex,
             }
 
-        # Crucial for memory efficiency: clear the element and its predecessors
-        # from memory after processing. This prevents the entire XML tree
-        # from being held in memory.
+        # Crucial for memory efficiency: clear the element from memory.
         elem.clear()
         while elem.getprevious() is not None:
             del elem.getparent()[0]
 
-    # Clean up the context variable to free any remaining memory
     del context

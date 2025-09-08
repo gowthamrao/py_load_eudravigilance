@@ -17,19 +17,15 @@
       <transmissiondate>20240101</transmissiondate>
       <reporttype>1</reporttype>
       <serious>1</serious>
-      <seriousnessdeath>2</seriousnessdeath>
-      <seriousnesslifethreatening>2</seriousnesslifethreatening>
-      <seriousnesshospitalization>1</seriousnesshospitalization>
-      <seriousnessdisabling>2</seriousnessdisabling>
-      <seriousnesscongenitalanomali>2</seriousnesscongenitalanomali>
-      <seriousnessother>2</seriousnessother>
       <receivedateformat>102</receivedateformat>
       <receivedate>20240101</receivedate>
       <receiptdateformat>102</receiptdateformat>
       <receiptdate>20240101</receiptdate>
-      <additionaldocument>2</additionaldocument>
-      <fulfillexpeditecriteria>1</fulfillexpeditecriteria>
-      <companynumb>TEST-CASE-001</companynumb>
+      <patient>
+        <patientinitials>FN</patientinitials>
+        <patientonsetage>55</patientonsetage>
+        <patientsex>1</patientsex>
+      </patient>
     </safetyreport>
   </ichicsrMessage>
   <ichicsrMessage>
@@ -53,9 +49,34 @@
       <receivedate>20240102</receivedate>
       <receiptdateformat>102</receiptdateformat>
       <receiptdate>20240102</receiptdate>
-      <additionaldocument>2</additionaldocument>
-      <fulfillexpeditecriteria>2</fulfillexpeditecriteria>
-      <companynumb>TEST-CASE-002</companynumb>
+      <patient>
+        <patientinitials>LW</patientinitials>
+        <patientonsetage>78</patientonsetage>
+        <patientsex>2</patientsex>
+      </patient>
+    </safetyreport>
+  </ichicsrMessage>
+  <ichicsrMessage>
+    <messageheader>
+      <messagetype>ichicsr</messagetype>
+      <messageformatversion>2.1</messageformatversion>
+      <messagesenderidentifier>TESTSENDER</messagesenderidentifier>
+      <messagereceiveridentifier>TESTRECEIVER</messagereceiveridentifier>
+      <messagedate>20240103120000</messagedate>
+    </messageheader>
+    <safetyreport>
+      <safetyreportversion>1</safetyreportversion>
+      <safetyreportid>TEST-CASE-003</safetyreportid>
+      <primarysourcecountry>DE</primarysourcecountry>
+      <occurcountry>DE</occurcountry>
+      <transmissiondateformat>204</transmissiondateformat>
+      <transmissiondate>20240103</transmissiondate>
+      <reporttype>1</reporttype>
+      <serious>2</serious>
+      <receivedateformat>102</receivedateformat>
+      <receivedate>20240103</receivedate>
+      <receiptdateformat>102</receiptdateformat>
+      <receiptdate>20240103</receiptdate>
     </safetyreport>
   </ichicsrMessage>
 </ichicsr>

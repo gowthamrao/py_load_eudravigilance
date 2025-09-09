@@ -10,7 +10,7 @@ import io
 import os
 import concurrent.futures
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 import fsspec
 import typer
@@ -35,27 +35,23 @@ def process_single_file(
     db_dsn: str,
     schema_type: str,
     mode: str,
-) -> Tuple[str, str]:
+) -> Dict[str, Any]:
     """
     Processes a single XML file content.
 
     This function is designed to be called by a ProcessPoolExecutor. It
     initializes its own database loader to ensure process safety.
     """
+    result = {"path": file_path, "status": "failure", "parsing_errors": []}
     try:
         file_hash = hashlib.sha256(file_content).hexdigest()
-        # Each worker creates its own loader and engine from the DSN
         loader = get_loader(db_dsn)
-
         file_buffer = io.BytesIO(file_content)
 
         if schema_type == "normalized":
             icsr_generator = parse_icsr_xml(file_buffer)
-            buffers, row_counts = transform_and_normalize(icsr_generator)
-            if not row_counts.get("icsr_master"):
-                loader._log_file_status(file_path, file_hash, "completed", 0)
-                loader.manage_transaction("COMMIT")
-                return file_path, "skipped_no_icsr"
+            buffers, row_counts, errors = transform_and_normalize(icsr_generator)
+            result["parsing_errors"] = errors
             loader.load_normalized_data(
                 buffers=buffers,
                 row_counts=row_counts,
@@ -64,12 +60,9 @@ def process_single_file(
                 file_hash=file_hash,
             )
         elif schema_type == "audit":
+            # Note: Audit load does not yet support granular error reporting
             icsr_generator = parse_icsr_xml_for_audit(file_buffer)
             buffer, row_count = transform_for_audit(icsr_generator)
-            if row_count == 0:
-                loader._log_file_status(file_path, file_hash, "completed_audit", 0)
-                loader.manage_transaction("COMMIT")
-                return file_path, "skipped_no_icsr"
             loader.load_audit_data(
                 buffer=buffer,
                 row_count=row_count,
@@ -77,13 +70,11 @@ def process_single_file(
                 file_path=file_path,
                 file_hash=file_hash,
             )
-        return file_path, "success"
+        result["status"] = "success"
+        return result
     except Exception as e:
         print(f"Error processing file {file_path} in worker: {e}")
-        return file_path, "failure"
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
+        return result
 
 
 @app.command()
@@ -178,9 +169,10 @@ def run(
 
     files_processed = 0
     files_failed = 0
+    total_parsing_errors = 0
 
     with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
-        future_to_path = {
+        future_to_result = {
             executor.submit(
                 process_single_file,
                 content,
@@ -194,13 +186,26 @@ def run(
 
         # 4. Process results and handle failures (DLQ)
         fs, _, _ = fsspec.get_fs_token_paths(final_source_uri)
-        for future in concurrent.futures.as_completed(future_to_path):
-            path = future_to_path[future]
+        for future in concurrent.futures.as_completed(future_to_result):
+            path = future_to_result[future]
             try:
-                _, status = future.result()
+                result = future.result()
+                status = result["status"]
+                parsing_errors = result["parsing_errors"]
+
+                if parsing_errors:
+                    total_parsing_errors += len(parsing_errors)
+                    typer.secho(
+                        f"File {path} processed with {len(parsing_errors)} parsing errors:",
+                        fg=typer.colors.YELLOW,
+                    )
+                    for error in parsing_errors:
+                        typer.secho(f"  - {error}", fg=typer.colors.YELLOW)
+
                 if status == "success":
                     files_processed += 1
                     typer.secho(f"Successfully processed file: {path}", fg=typer.colors.GREEN)
+
                 elif status == "failure":
                     files_failed += 1
                     typer.secho(f"Failed to process file: {path}", fg=typer.colors.RED)
@@ -218,16 +223,15 @@ def run(
                             typer.secho(f"  -> Failed to move file to quarantine: {mv_exc}", fg=typer.colors.RED)
                     else:
                         typer.secho("  -> Quarantine URI not set. Failed file was not moved.", fg=typer.colors.YELLOW)
-
-                else: # Skipped
-                    typer.secho(f"Skipped file (no data or already processed in worker): {path}", fg=typer.colors.YELLOW)
             except Exception as exc:
                 files_failed += 1
                 typer.secho(f"File {path} generated an exception: {exc}", fg=typer.colors.RED)
 
+    summary_color = typer.colors.GREEN if files_failed == 0 else typer.colors.YELLOW
     typer.secho(
-        f"\nETL process finished. {files_processed} files processed successfully, {files_failed} failed.",
-        fg=typer.colors.GREEN if files_failed == 0 else typer.colors.YELLOW,
+        f"\nETL process finished. {files_processed} files processed successfully, "
+        f"{files_failed} failed. Found {total_parsing_errors} parsing errors.",
+        fg=summary_color,
     )
     if files_failed > 0:
         raise typer.Exit(code=1)

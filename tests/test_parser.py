@@ -1,7 +1,10 @@
 import os
 from pathlib import Path
 
-from py_load_eudravigilance.parser import parse_icsr_xml
+from py_load_eudravigilance.parser import (
+    parse_icsr_xml,
+    InvalidICSRError,
+)
 
 # Get the directory of the current test file to build a path to the sample data.
 TEST_DIR = Path(__file__).parent
@@ -80,3 +83,32 @@ def test_parse_icsr_xml_with_nested_data():
     assert len(case3["reactions"]) == 0
     assert "drugs" in case3
     assert len(case3["drugs"]) == 0
+
+
+def test_parse_mixed_validity_xml():
+    """
+    Tests that a file with both valid and invalid ICSRs is handled correctly.
+    The parser should yield dicts for valid records and InvalidICSRError
+    objects for invalid ones.
+    """
+    xml_path = TEST_DIR / "mixed_validity_e2b.xml"
+    with open(xml_path, "rb") as f:
+        results = list(parse_icsr_xml(f))
+
+    # There are 3 messages in the file
+    assert len(results) == 3
+
+    valid_reports = [r for r in results if isinstance(r, dict)]
+    errors = [r for r in results if isinstance(r, InvalidICSRError)]
+
+    assert len(valid_reports) == 2
+    assert len(errors) == 1
+
+    # Check the error
+    error = errors[0]
+    assert "Missing required field: safetyreportid" in error.message
+    assert error.partial_data["senderidentifier"] == "SENDER2"
+
+    # Check the valid reports
+    valid_ids = {r["safetyreportid"] for r in valid_reports}
+    assert valid_ids == {"TEST-VALID-001", "TEST-VALID-003"}

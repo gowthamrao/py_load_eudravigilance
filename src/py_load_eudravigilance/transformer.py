@@ -8,32 +8,33 @@ into a relational format suitable for bulk loading into the target database.
 import csv
 import io
 import json
-from typing import Any, Dict, Generator, IO
+from typing import Any, Dict, Generator, IO, List
 
 
 from typing import Dict, Tuple
 
 from . import schema as db_schema
+from .parser import InvalidICSRError
 
 
 def transform_and_normalize(
-    icsr_generator: Generator[Dict[str, Any], None, None]
-) -> Tuple[Dict[str, io.StringIO], Dict[str, int]]:
+    icsr_generator: Generator[Dict[str, Any] | InvalidICSRError, None, None]
+) -> Tuple[Dict[str, io.StringIO], Dict[str, int], List[InvalidICSRError]]:
     """
-    Transforms and normalizes a generator of ICSR dictionaries into multiple
-    in-memory CSV buffers, one for each target relational table.
+    Transforms and normalizes a generator of ICSRs into multiple CSV buffers.
 
-    This function implements the "T" phase of the ETL, creating normalized,
-    linkable data streams suitable for bulk loading. It uses the central
-    `schema.py` module as the single source of truth for table structures.
+    This function implements the "T" phase of the ETL. It handles a mixed
+    stream of parsed data (dicts) and parsing errors (InvalidICSRError)
+    from the parser.
 
     Args:
-        icsr_generator: A generator yielding nested dictionaries from the parser.
+        icsr_generator: A generator yielding dicts or InvalidICSRError objects.
 
     Returns:
         A tuple containing:
         - A dictionary mapping table names to `io.StringIO` CSV buffers.
         - A dictionary mapping table names to their respective row counts.
+        - A list of InvalidICSRError objects encountered during processing.
     """
     # Define the target tables we will be transforming data for.
     # This order is preserved when creating buffers and writers.
@@ -69,29 +70,32 @@ def transform_and_normalize(
     for writer in writers.values():
         writer.writeheader()
 
-    # Process each ICSR from the parser
-    for icsr_dict in icsr_generator:
-        safetyreportid = icsr_dict.get("safetyreportid")
-        if not safetyreportid:
-            continue  # Skip if the core identifier is missing
+    parsing_errors = []
+    # Process each item from the parser
+    for item in icsr_generator:
+        if isinstance(item, InvalidICSRError):
+            parsing_errors.append(item)
+            continue
+
+        # If we get here, the item is a valid icsr_dict
+        icsr_dict = item
+        safetyreportid = icsr_dict["safetyreportid"]
 
         # 1. Populate the master and patient tables (one-to-one)
         master_row = {k: icsr_dict.get(k) for k in schemas["icsr_master"]}
-        # Explicitly convert boolean to string for CSV writer, handling None
         is_nullified_val = master_row.get("is_nullified")
-        master_row["is_nullified"] = str(is_nullified_val if is_nullified_val is not None else False)
+        master_row["is_nullified"] = str(is_nullified_val is not None and is_nullified_val)
         writers["icsr_master"].writerow(master_row)
         row_counts["icsr_master"] += 1
 
         patient_row = {k: icsr_dict.get(k) for k in schemas["patient_characteristics"]}
-        patient_row["safetyreportid"] = safetyreportid # Add foreign key
+        patient_row["safetyreportid"] = safetyreportid
         writers["patient_characteristics"].writerow(patient_row)
         row_counts["patient_characteristics"] += 1
 
-
         # 2. Populate the reactions table (one-to-many)
         for reaction in icsr_dict.get("reactions", []):
-            reaction["safetyreportid"] = safetyreportid  # Add foreign key
+            reaction["safetyreportid"] = safetyreportid
             writers["reactions"].writerow(reaction)
             row_counts["reactions"] += 1
 
@@ -99,7 +103,7 @@ def transform_and_normalize(
         drug_seq = 0
         for drug in icsr_dict.get("drugs", []):
             drug_seq += 1
-            drug["safetyreportid"] = safetyreportid  # Add foreign key
+            drug["safetyreportid"] = safetyreportid
             drug["drug_seq"] = drug_seq
             writers["drugs"].writerow({k: drug.get(k) for k in schemas["drugs"]})
             row_counts["drugs"] += 1
@@ -115,13 +119,16 @@ def transform_and_normalize(
 
         # 4. Populate the tests_procedures table (one-to-many)
         for test in icsr_dict.get("tests", []):
-            test["safetyreportid"] = safetyreportid  # Add foreign key
+            test["safetyreportid"] = safetyreportid
             writers["tests_procedures"].writerow(test)
             row_counts["tests_procedures"] += 1
 
         # 5. Populate the narrative table (one-to-one)
         if icsr_dict.get("narrative"):
-            narrative_row = {"safetyreportid": safetyreportid, "narrative": icsr_dict["narrative"]}
+            narrative_row = {
+                "safetyreportid": safetyreportid,
+                "narrative": icsr_dict["narrative"],
+            }
             writers["case_summary_narrative"].writerow(narrative_row)
             row_counts["case_summary_narrative"] += 1
 
@@ -129,7 +136,7 @@ def transform_and_normalize(
     for buffer in buffers.values():
         buffer.seek(0)
 
-    return buffers, row_counts
+    return buffers, row_counts, parsing_errors
 
 
 def transform_for_audit(

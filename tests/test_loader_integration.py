@@ -15,11 +15,8 @@ def loader(postgres_container):
     return PostgresLoader(engine)
 
 def test_connection(loader):
+    """Tests that the loader is initialized with an engine."""
     assert loader.engine is not None
-    connection = loader.connect()
-    assert connection is not None
-    assert not connection.closed
-    connection.close()
 
 def test_create_and_load_data(loader):
     # 1. Create a test table
@@ -37,9 +34,9 @@ def test_create_and_load_data(loader):
     data_stream = StringIO(csv_data)
     columns = ["id", "name"]
 
-    # 3. Load data
-    loader.bulk_load_native(data_stream, "test_data", columns)
-    loader.manage_transaction("COMMIT") # Manually commit for the test
+    # 3. Load data using a transaction
+    with loader.engine.begin() as conn:
+        loader.bulk_load_native(conn, data_stream, "test_data", columns)
 
     # 4. Verify data
     with loader.engine.connect() as connection:
@@ -75,32 +72,32 @@ def test_dynamic_upsert(loader):
         ])
 
     # 3. Use the loader's methods to create a staging table and load data
-    loader.manage_transaction("BEGIN")
-    staging_table_name = loader.prepare_load(table_name, load_mode="delta")
+    with loader.engine.begin() as conn:
+        staging_table_name = loader.prepare_load(conn, table_name, load_mode="delta")
 
-    # The data needs to be in a file-like object (CSV)
-    csv_data = (
-        "pk1,pk2,data,version\n"
-        "1,a,updated_A,2\n"
-        "1,b,stale_B,0\n"
-        "2,c,new_C,1\n"
-    )
-    data_stream = StringIO(csv_data)
-    columns = ["pk1", "pk2", "data", "version"]
-    loader.bulk_load_native(data_stream, staging_table_name, columns)
+        # The data needs to be in a file-like object (CSV)
+        csv_data = (
+            "pk1,pk2,data,version\n"
+            "1,a,updated_A,2\n"
+            "1,b,stale_B,0\n"
+            "2,c,new_C,1\n"
+        )
+        data_stream = StringIO(csv_data)
+        columns = ["pk1", "pk2", "data", "version"]
+        loader.bulk_load_native(conn, data_stream, staging_table_name, columns)
 
-    # 4. Run the upsert logic
-    table_meta = loader._get_table_metadata(table_name)
-    assert table_meta["pk"] == ["pk1", "pk2"]
-    assert table_meta["version_key"] == "version"
+        # 4. Run the upsert logic
+        table_meta = loader._get_table_metadata(table_name)
+        assert table_meta["pk"] == ["pk1", "pk2"]
+        assert table_meta["version_key"] == "version"
 
-    loader.handle_upsert(
-        staging_table=staging_table_name,
-        target_table=table_name,
-        primary_keys=table_meta["pk"],
-        version_key=table_meta["version_key"],
-    )
-    loader.manage_transaction("COMMIT")
+        loader.handle_upsert(
+            conn,
+            staging_table=staging_table_name,
+            target_table=table_name,
+            primary_keys=table_meta["pk"],
+            version_key=table_meta["version_key"],
+        )
 
     # 5. Verify the final state of the table
     with loader.engine.connect() as connection:

@@ -5,15 +5,16 @@ This module defines the database loader interface and provides concrete
 implementations for different database backends (e.g., PostgreSQL).
 It is responsible for all database interactions, including native bulk loading.
 """
+import sqlalchemy
 from io import IOBase
 from typing import Any, Dict, List
-
+from sqlalchemy import Table, select
 from .interfaces import LoaderInterface
-from .schema import metadata
+from . import schema as db_schema
+
 
 try:
     import psycopg2
-    import sqlalchemy
     from psycopg2.extensions import connection as PgConnection
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from sqlalchemy.engine.url import make_url
@@ -79,7 +80,6 @@ class PostgresLoader(LoaderInterface):
                            a psycopg2-style DSN string, or a pre-existing
                            SQLAlchemy Engine instance.
         """
-        self.conn: PgConnection | None = None
         self.staging_table_name: str | None = None
 
         if isinstance(dsn_or_engine, sqlalchemy.engine.Engine):
@@ -90,7 +90,7 @@ class PostgresLoader(LoaderInterface):
                 f"dbname='{url.database}' user='{url.username}' "
                 f"password='{url.password}' host='{url.host}' port='{url.port}'"
             )
-        else: # It's a DSN string
+        else:  # It's a DSN string
             dsn = str(dsn_or_engine)
             try:
                 # Create the SQLAlchemy engine directly from the DSN
@@ -106,7 +106,6 @@ class PostgresLoader(LoaderInterface):
                 # Handle cases where the DSN might be in the simple format psycopg2
                 # expects but SQLAlchemy does not.
                 print(f"Could not parse DSN for SQLAlchemy, falling back. Error: {e}")
-                self.psycopg2_dsn = dsn
                 connect_args = {
                     item.split("=")[0]: item.split("=")[1]
                     for item in dsn.split()
@@ -115,13 +114,6 @@ class PostgresLoader(LoaderInterface):
                 self.engine = sqlalchemy.create_engine(
                     "postgresql+psycopg2://", connect_args=connect_args
                 )
-
-
-    def connect(self) -> PgConnection:
-        """Establishes and returns a connection to the PostgreSQL database."""
-        if self.conn is None or self.conn.closed:
-            self.conn = psycopg2.connect(self.psycopg2_dsn)
-        return self.conn
 
     def validate_schema(self, expected_tables: Dict[str, sqlalchemy.Table]) -> bool:
         """
@@ -204,145 +196,150 @@ class PostgresLoader(LoaderInterface):
 
         return True
 
-    def prepare_load(self, target_table: str, load_mode: str) -> str:
+    def prepare_load(self, conn: sqlalchemy.Connection, target_table: str, load_mode: str) -> str:
         """
         Prepares the database for loading. For 'delta' mode, this is part of
         the file transaction. For 'full' mode, this is a separate, committed
         action before processing begins.
         """
-        if self.conn is None or self.conn.closed:
-            self.connect()
-
         if load_mode == "full":
-            with self.conn.cursor() as cursor:
-                # Use CASCADE to handle foreign key constraints automatically.
-                cursor.execute(f"TRUNCATE TABLE {target_table} CASCADE;")
-                print(f"Table '{target_table}' truncated for full load.")
-            # A full load truncate should be committed immediately.
-            self.conn.commit()
+            # Use CASCADE to handle foreign key constraints automatically.
+            conn.execute(sqlalchemy.text(f"TRUNCATE TABLE {target_table} CASCADE;"))
+            print(f"Table '{target_table}' truncated for full load.")
             return target_table
 
         elif load_mode == "delta":
             staging_table_name = f"__staging_{target_table}"
-            with self.conn.cursor() as cursor:
-                # This runs inside a transaction, so the temp table is transactional.
-                cursor.execute(f"DROP TABLE IF EXISTS {staging_table_name};")
-                create_sql = (
-                    f"CREATE TEMP TABLE {staging_table_name} "
-                    f"(LIKE {target_table} INCLUDING ALL);"
-                )
-                cursor.execute(create_sql)
-                print(f"Temporary staging table '{staging_table_name}' created.")
-            # DO NOT COMMIT HERE - this is part of the per-file transaction
+            # This runs inside a transaction, so the temp table is transactional.
+            conn.execute(sqlalchemy.text(f"DROP TABLE IF EXISTS {staging_table_name};"))
+            create_sql = (
+                f"CREATE TEMP TABLE {staging_table_name} "
+                f"(LIKE {target_table} INCLUDING ALL);"
+            )
+            conn.execute(sqlalchemy.text(create_sql))
+            print(f"Temporary staging table '{staging_table_name}' created.")
             return staging_table_name
 
         else:
             raise ValueError(f"Unknown load mode: {load_mode}")
 
     def bulk_load_native(
-        self, data_stream: IOBase, target_table: str, columns: List[str]
+        self, conn: sqlalchemy.Connection, data_stream: IOBase, target_table: str, columns: List[str]
     ) -> None:
         """
         Loads data from an in-memory buffer into a PostgreSQL table using COPY.
         This method does NOT commit the transaction.
         """
-        if self.conn is None or self.conn.closed:
-            self.connect()
-
         column_sql = ""
         if columns:
             column_sql = f"({', '.join(columns)})"
 
         sql = f"COPY {target_table} {column_sql} FROM STDIN WITH CSV HEADER"
 
-        with self.conn.cursor() as cursor:
+        # Get the raw psycopg2 connection from the SQLAlchemy connection
+        raw_conn = conn.connection
+        with raw_conn.cursor() as cursor:
             cursor.copy_expert(sql, data_stream)
-        # DO NOT COMMIT HERE
+
         print(f"Successfully loaded data into '{target_table}'.")
 
     def handle_upsert(
         self,
+        conn: sqlalchemy.Connection,
         staging_table: str,
         target_table: str,
         primary_keys: List[str],
         version_key: str | None,
     ) -> None:
         """
-        Merges data from the staging table into the target table using raw SQL
-        for robustness. This method does NOT commit the transaction.
+        Merges data from the staging table into the target table using
+        SQLAlchemy Core for safety and robustness. This method does NOT
+        commit the transaction.
         """
-        if self.conn is None or self.conn.closed:
-            self.connect()
+        target_table_obj = self._get_table_obj(conn, target_table)
+        staging_table_obj = self._get_table_obj(
+            conn, staging_table
+        )
 
-        inspector = sqlalchemy.inspect(self.engine)
-        all_columns = [col["name"] for col in inspector.get_columns(target_table)]
-        update_cols = [col for col in all_columns if col not in primary_keys]
-        pk_string = ", ".join(primary_keys)
+        # Reflect the columns from the staging table to build the insert
+        insert_stmt = pg_insert(target_table_obj).from_select(
+            [c.name for c in staging_table_obj.c],
+            select(staging_table_obj)
+        )
 
-        if not update_cols:
-            sql = f"""
-                INSERT INTO {target_table} ({", ".join(all_columns)})
-                SELECT * FROM {staging_table}
-                ON CONFLICT ({pk_string}) DO NOTHING;
-            """
+        # For the ON CONFLICT clause, get the "excluded" table proxy
+        excluded = insert_stmt.excluded
+
+        # Dynamically build the SET clause for the UPDATE part
+        update_dict = {}
+        has_nullified_col = "is_nullified" in excluded
+
+        for col in target_table_obj.c:
+            if col.name not in primary_keys and not col.server_default:
+                # Special handling for version key on tables with nullification
+                if col.name == version_key and has_nullified_col:
+                    # Don't update version if it's a nullification
+                    update_dict[col.name] = sqlalchemy.case(
+                        (excluded.is_nullified, col),
+                        else_=excluded[col.name]
+                    )
+                else:
+                    update_dict[col.name] = excluded[col.name]
+
+        # If there are columns to update, add the DO UPDATE clause
+        if update_dict:
+            where_clause = None
+            if version_key:
+                # The WHERE clause should apply if the new record is newer,
+                # OR if the new record is a nullification instruction.
+                where_clause = target_table_obj.c[version_key] < excluded[version_key]
+                if has_nullified_col:
+                    where_clause = sqlalchemy.or_(where_clause, excluded.is_nullified)
+
+            upsert_stmt = insert_stmt.on_conflict_do_update(
+                index_elements=primary_keys,
+                set_=update_dict,
+                where=where_clause,
+            )
         else:
-            update_statements = []
-            if target_table == "icsr_master":
-                for col in update_cols:
-                    if col == version_key:
-                        statement = f"{col} = CASE WHEN EXCLUDED.is_nullified THEN {target_table}.{col} ELSE EXCLUDED.{col} END"
-                        update_statements.append(statement)
-                    else:
-                        update_statements.append(f"{col} = EXCLUDED.{col}")
-            else:
-                update_statements = [f"{col} = EXCLUDED.{col}" for col in update_cols]
+            # If there are no columns to update, just do nothing on conflict
+            upsert_stmt = insert_stmt.on_conflict_do_nothing(
+                index_elements=primary_keys
+            )
 
-            update_clause = ", ".join(update_statements)
+        conn.execute(upsert_stmt)
 
-            sql = f"""
-                INSERT INTO {target_table} ({", ".join(all_columns)})
-                SELECT * FROM {staging_table}
-                ON CONFLICT ({pk_string}) DO UPDATE
-                SET {update_clause}
-            """
-            if target_table == 'icsr_master' and version_key:
-                sql += f" WHERE {target_table}.{version_key} < EXCLUDED.{version_key} OR EXCLUDED.is_nullified;"
-            elif version_key:
-                sql += f" WHERE {target_table}.{version_key} < EXCLUDED.{version_key};"
-            else:
-                sql += ";"
-
-        with self.conn.cursor() as cursor:
-            cursor.execute(sql)
-        # DO NOT COMMIT HERE
         print(f"Upsert completed from '{staging_table}' to '{target_table}'.")
 
-    def manage_transaction(self, action: str) -> None:
-        """Manages the database transaction."""
-        if self.conn is None:
-            return
 
-        action = action.upper()
-        if action == "BEGIN":
-            # psycopg2 starts a transaction automatically on the first command.
-            pass
-        elif action == "COMMIT":
-            self.conn.commit()
-        elif action == "ROLLBACK":
-            self.conn.rollback()
-        else:
-            raise ValueError(f"Unknown transaction action: {action}")
+    def _get_table_obj(self, conn: sqlalchemy.Connection, table_name: str) -> Table:
+        """
+        Gets a SQLAlchemy Table object from the schema or by reflection.
+        It uses the provided connection for reflection, which is crucial
+        for transaction-scoped temporary tables.
+        """
+        # First, try to get the table from our predefined schema
+        table_obj = db_schema.metadata.tables.get(table_name)
+        if table_obj is not None:
+            return table_obj
+
+        # If not found (e.g., a temp or test-specific table), reflect it
+        temp_meta = sqlalchemy.MetaData()
+        return Table(
+            table_name, temp_meta, autoload_with=conn
+        )
 
     def create_all_tables(self) -> None:
         """
         Creates all defined tables in the schema.py file against the target
         database. This is an idempotent operation.
         """
-        metadata.create_all(self.engine)
+        db_schema.metadata.create_all(self.engine)
         print("All tables created or already exist.")
 
     def _log_file_status(
         self,
+        conn: sqlalchemy.Connection,
         filename: str,
         file_hash: str,
         status: str,
@@ -352,13 +349,7 @@ class PostgresLoader(LoaderInterface):
         Logs or updates the status of a file in the history table.
         This method does NOT commit the transaction.
         """
-        if self.conn is None or self.conn.closed:
-            self.connect()
-
-        metadata = sqlalchemy.MetaData()
-        history_table = sqlalchemy.Table(
-            "etl_file_history", metadata, autoload_with=self.engine
-        )
+        history_table = self._get_table_obj(conn, "etl_file_history")
 
         stmt = pg_insert(history_table).values(
             filename=filename,
@@ -376,12 +367,7 @@ class PostgresLoader(LoaderInterface):
                 "load_timestamp": sqlalchemy.func.now(),
             },
         )
-
-        # Execute using the main connection to be part of the transaction
-        compiled = update_stmt.compile(self.engine)
-        with self.conn.cursor() as cursor:
-            cursor.execute(str(compiled), compiled.params)
-        # DO NOT COMMIT HERE
+        conn.execute(update_stmt)
 
 
     def get_completed_file_hashes(self) -> set[str]:
@@ -439,44 +425,51 @@ class PostgresLoader(LoaderInterface):
         Orchestrates the loading of multiple normalized data buffers into their
         respective tables within a single transaction.
         """
-        self.manage_transaction("BEGIN")
+        # For a full load, truncate all tables first in a separate transaction.
+        if load_mode == "full":
+            with self.engine.begin() as conn:
+                for table_name in buffers.keys():
+                    self.prepare_load(conn, table_name, load_mode)
+
         try:
-            total_rows = sum(row_counts.values())
-            self._log_file_status(file_path, file_hash, "running", total_rows)
+            with self.engine.begin() as conn:
+                total_rows = sum(row_counts.values())
+                self._log_file_status(conn, file_path, file_hash, "running", total_rows)
 
-            for table_name, buffer in buffers.items():
-                if row_counts.get(table_name, 0) > 0:
-                    print(f"Processing table: {table_name}")
-                    table_meta = self._get_table_metadata(table_name)
+                for table_name, buffer in buffers.items():
+                    if row_counts.get(table_name, 0) > 0:
+                        print(f"Processing table: {table_name}")
+                        # In 'full' mode, data goes directly to the target table.
+                        # In 'delta' mode, it goes to a staging table.
+                        if load_mode == "full":
+                            target_or_staging_table = table_name
+                        else: # delta
+                            target_or_staging_table = self.prepare_load(
+                                conn, target_table=table_name, load_mode=load_mode
+                            )
 
-                    staging_table = self.prepare_load(
-                        target_table=table_name, load_mode=load_mode
-                    )
-                    # Get columns from the CSV header
-                    buffer.seek(0)
-                    header = buffer.readline().strip()
-                    columns = header.split(',')
-                    buffer.seek(0) # Rewind for the loader
+                        buffer.seek(0)
+                        header = buffer.readline().strip()
+                        columns = header.split(',')
+                        buffer.seek(0)
 
-                    self.bulk_load_native(buffer, staging_table, columns=columns)
+                        self.bulk_load_native(conn, buffer, target_or_staging_table, columns)
 
-                    if load_mode == "delta":
-                        self.handle_upsert(
-                            staging_table=staging_table,
-                            target_table=table_name,
-                            primary_keys=table_meta["pk"],
-                            version_key=table_meta["version_key"],
-                        )
+                        if load_mode == "delta":
+                            table_meta = self._get_table_metadata(table_name)
+                            self.handle_upsert(
+                                conn,
+                                staging_table=target_or_staging_table,
+                                target_table=table_name,
+                                primary_keys=table_meta["pk"],
+                                version_key=table_meta["version_key"],
+                            )
 
-            self._log_file_status(file_path, file_hash, "completed", total_rows)
-            self.manage_transaction("COMMIT")
-
+                self._log_file_status(conn, file_path, file_hash, "completed", total_rows)
         except Exception as e:
             print(f"Error during normalized load for file {file_path}. Rolling back.")
-            self.manage_transaction("ROLLBACK")
-            # Log failure in a separate transaction
-            self._log_file_status(file_path, file_hash, "failed")
-            self.manage_transaction("COMMIT")
+            with self.engine.begin() as conn:
+                self._log_file_status(conn, file_path, file_hash, "failed")
             raise e
 
     def load_audit_data(
@@ -492,35 +485,42 @@ class PostgresLoader(LoaderInterface):
         `icsr_audit_log` table within a single transaction.
         """
         TABLE_NAME = "icsr_audit_log"
-        table_meta = self._get_table_metadata(TABLE_NAME)
 
-        self.manage_transaction("BEGIN")
+        if load_mode == "full":
+            with self.engine.begin() as conn:
+                self.prepare_load(conn, TABLE_NAME, load_mode)
+
         try:
-            self._log_file_status(file_path, file_hash, "running_audit", row_count)
+            with self.engine.begin() as conn:
+                self._log_file_status(conn, file_path, file_hash, "running_audit", row_count)
 
-            staging_table = self.prepare_load(
-                target_table=TABLE_NAME, load_mode=load_mode
-            )
-            self.bulk_load_native(
-                buffer,
-                staging_table,
-                columns=["safetyreportid", "receiptdate", "icsr_payload"],
-            )
+                if load_mode == "full":
+                    target_or_staging_table = TABLE_NAME
+                else: # delta
+                    target_or_staging_table = self.prepare_load(
+                        conn, target_table=TABLE_NAME, load_mode=load_mode
+                    )
 
-            if load_mode == "delta":
-                self.handle_upsert(
-                    staging_table=staging_table,
-                    target_table=TABLE_NAME,
-                    primary_keys=table_meta["pk"],
-                    version_key=table_meta["version_key"],
+                self.bulk_load_native(
+                    conn,
+                    buffer,
+                    target_or_staging_table,
+                    columns=["safetyreportid", "receiptdate", "icsr_payload"],
                 )
 
-            self._log_file_status(file_path, file_hash, "completed_audit", row_count)
-            self.manage_transaction("COMMIT")
+                if load_mode == "delta":
+                    table_meta = self._get_table_metadata(TABLE_NAME)
+                    self.handle_upsert(
+                        conn,
+                        staging_table=target_or_staging_table,
+                        target_table=TABLE_NAME,
+                        primary_keys=table_meta["pk"],
+                        version_key=table_meta["version_key"],
+                    )
 
+                self._log_file_status(conn, file_path, file_hash, "completed_audit", row_count)
         except Exception as e:
             print(f"Error during audit load for file {file_path}. Rolling back.")
-            self.manage_transaction("ROLLBACK")
-            self._log_file_status(file_path, file_hash, "failed_audit")
-            self.manage_transaction("COMMIT")
+            with self.engine.begin() as conn:
+                self._log_file_status(conn, file_path, file_hash, "failed_audit")
             raise e

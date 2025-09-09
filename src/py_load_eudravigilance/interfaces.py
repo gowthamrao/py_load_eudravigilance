@@ -4,7 +4,7 @@ from typing import Any, Dict, List
 
 # Using Any for Connection to avoid a premature driver import in the interface.
 # A concrete implementation would use its specific connection object.
-Connection = Any
+from sqlalchemy.engine import Connection
 
 class LoaderInterface(ABC):
     """
@@ -16,17 +16,12 @@ class LoaderInterface(ABC):
     """
 
     @abstractmethod
-    def connect(self) -> Connection:
-        """Establish a connection using the appropriate native driver."""
-        raise NotImplementedError
-
-    @abstractmethod
     def validate_schema(self, schema_definition: Dict[str, Any]) -> bool:
         """Verify the target database schema matches the expected definition."""
         raise NotImplementedError
 
     @abstractmethod
-    def prepare_load(self, target_table: str, load_mode: str) -> str:
+    def prepare_load(self, conn: Connection, target_table: str, load_mode: str) -> str:
         """
         Execute pre-loading tasks and return the name of the staging table.
 
@@ -37,7 +32,7 @@ class LoaderInterface(ABC):
 
     @abstractmethod
     def bulk_load_native(
-        self, data_stream: IOBase, target_table: str, columns: List[str]
+        self, conn: Connection, data_stream: IOBase, target_table: str, columns: List[str]
     ) -> None:
         """
         Stream data from data_stream into the target_table using the
@@ -48,6 +43,7 @@ class LoaderInterface(ABC):
     @abstractmethod
     def handle_upsert(
         self,
+        conn: Connection,
         staging_table: str,
         target_table: str,
         primary_keys: List[str],
@@ -56,13 +52,6 @@ class LoaderInterface(ABC):
         """
         Implement the logic for merging data from a staging table into the
         final target tables (MERGE/UPSERT).
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def manage_transaction(self, action: str) -> None:
-        """
-        Handle transaction boundaries (e.g., 'BEGIN', 'COMMIT', 'ROLLBACK').
         """
         raise NotImplementedError
 

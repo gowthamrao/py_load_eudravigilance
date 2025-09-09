@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:hl7="urn:hl7-org:v3"
+           targetNamespace="urn:hl7-org:v3"
+           elementFormDefault="qualified">
+
+    <xs:element name="ichicsrMessage">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="safetyreport" type="hl7:safetyreportType"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:complexType name="safetyreportType">
+        <xs:sequence>
+            <xs:element name="safetyreportid" type="xs:string"/>
+            <xs:element name="patient" type="hl7:patientType"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="patientType">
+        <xs:sequence>
+            <xs:element name="patientinitials" type="xs:string"/>
+            <!-- This is the field that will be missing in the invalid file -->
+            <xs:element name="patientsex" type="xs:string"/>
+        </xs:sequence>
+    </xs:complexType>
+
+</xs:schema>

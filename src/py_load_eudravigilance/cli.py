@@ -19,7 +19,7 @@ from typing_extensions import Annotated
 
 from .config import load_config, CONFIG_FILE_NAME
 from .loader import get_loader
-from .parser import parse_icsr_xml, parse_icsr_xml_for_audit
+from .parser import parse_icsr_xml, parse_icsr_xml_for_audit, validate_xml_with_xsd
 from .transformer import transform_and_normalize, transform_for_audit
 
 # Create a Typer application instance
@@ -248,6 +248,69 @@ def init_db(
         )
     except Exception as e:
         typer.secho(f"Database initialization failed: {e}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def validate(
+    source_uri: Annotated[
+        str,
+        typer.Argument(
+            help="URI for the source XML files to validate (e.g., 'data/*.xml', 's3://my-bucket/data/*.xml')."
+        ),
+    ],
+    schema: Annotated[
+        Path,
+        typer.Option(
+            "--schema",
+            "-s",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help="Path to the XSD schema file to validate against.",
+        ),
+    ],
+):
+    """
+    Validate one or more XML files against an XSD schema.
+    """
+    typer.echo(f"Starting validation using schema: {schema}")
+    typer.echo(f"Source: {source_uri}")
+
+    try:
+        input_files = fsspec.open_files(source_uri, mode="rb")
+        if not input_files:
+            typer.secho("No files found at the specified URI.", fg=typer.colors.YELLOW)
+            raise typer.Exit()
+    except Exception as e:
+        typer.secho(f"Error accessing source files: {e}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    valid_count = 0
+    invalid_count = 0
+
+    for file in input_files:
+        typer.echo(f"--> Validating file: {file.path}")
+        with file as f:
+            is_valid, errors = validate_xml_with_xsd(f, str(schema))
+            if is_valid:
+                valid_count += 1
+                typer.secho(f"    [VALID] {file.path}", fg=typer.colors.GREEN)
+            else:
+                invalid_count += 1
+                typer.secho(f"    [INVALID] {file.path}", fg=typer.colors.RED)
+                for error in errors:
+                    typer.secho(f"      - {error}", fg=typer.colors.RED)
+
+    summary_color = typer.colors.GREEN if invalid_count == 0 else typer.colors.YELLOW
+    typer.secho(
+        f"\nValidation summary: {valid_count} file(s) valid, {invalid_count} file(s) invalid.",
+        fg=summary_color,
+    )
+
+    if invalid_count > 0:
         raise typer.Exit(code=1)
 
 

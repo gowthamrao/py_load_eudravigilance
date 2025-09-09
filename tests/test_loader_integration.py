@@ -111,3 +111,57 @@ def test_dynamic_upsert(loader):
         assert {"pk1": 1, "pk2": "a", "data": "updated_A", "version": 2} in result_dicts
         assert {"pk1": 1, "pk2": "b", "data": "initial_B", "version": 1} in result_dicts
         assert {"pk1": 2, "pk2": "c", "data": "new_C", "version": 1} in result_dicts
+
+
+def test_full_load_truncates_data(loader):
+    """
+    Tests that running a normalized load in 'full' mode correctly
+    truncates existing data before loading new data.
+    """
+    # 1. Ensure the required schemas from the application are created
+    loader.create_all_tables()
+
+    # 2. Prepare mock data for two tables
+    master_csv = (
+        "safetyreportid,receiptdate,is_nullified,senderidentifier,receiveridentifier\n"
+        "test-id-1,2024-01-01,False,sender,receiver\n"
+    )
+    patient_csv = "safetyreportid,patientinitials\ntest-id-1,AB\n"
+
+    buffers = {
+        "icsr_master": StringIO(master_csv),
+        "patient_characteristics": StringIO(patient_csv),
+    }
+    row_counts = {"icsr_master": 1, "patient_characteristics": 1}
+
+    # 3. Perform the first full load
+    loader.load_normalized_data(
+        buffers=buffers,
+        row_counts=row_counts,
+        load_mode="full",
+        file_path="/fake/path/1",
+        file_hash="hash1",
+    )
+
+    # 4. Verify the initial load
+    with loader.engine.connect() as conn:
+        count = conn.execute(sqlalchemy.text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
+        assert count == 1
+
+    # 5. Reset buffers and perform a second full load with the same data
+    buffers["icsr_master"].seek(0)
+    buffers["patient_characteristics"].seek(0)
+
+    loader.load_normalized_data(
+        buffers=buffers,
+        row_counts=row_counts,
+        load_mode="full",
+        file_path="/fake/path/2",  # Different path to simulate a re-run
+        file_hash="hash2",
+    )
+
+    # 6. Verify that the table was truncated and now contains only the new load
+    with loader.engine.connect() as conn:
+        count = conn.execute(sqlalchemy.text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
+        # If TRUNCATE worked, the count should still be 1, not 2.
+        assert count == 1

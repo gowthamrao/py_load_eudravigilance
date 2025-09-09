@@ -84,7 +84,7 @@ def test_process_file_normalized(mock_settings):
          patch("py_load_eudravigilance.parser.parse_icsr_xml", return_value=mock_parser_stream) as mock_parser, \
          patch("py_load_eudravigilance.transformer.transform_and_normalize", return_value=mock_transformer_result) as mock_transformer:
 
-        success, message = etl_run.process_file(file_path, file_hash, mock_settings)
+        success, message = etl_run.process_file(file_path, file_hash, mock_settings, mode="delta")
 
         # Assertions
         mock_get_loader.assert_called_once_with(mock_settings.database.dsn)
@@ -113,11 +113,13 @@ def test_run_etl_orchestration(mock_process_parallel, mock_filter, mock_discover
     mock_discover.return_value = ["file1.xml", "file2.xml"]
     mock_filter.return_value = {"file1.xml": "hash1"}
 
-    etl_run.run_etl(mock_settings, max_workers=4)
+    etl_run.run_etl(mock_settings, mode="delta", max_workers=4)
 
     mock_discover.assert_called_once_with(mock_settings.source_uri)
     mock_filter.assert_called_once_with(["file1.xml", "file2.xml"], mock_settings)
-    mock_process_parallel.assert_called_once_with({"file1.xml": "hash1"}, mock_settings, 4)
+    mock_process_parallel.assert_called_once_with(
+        {"file1.xml": "hash1"}, mock_settings, "delta", 4
+    )
 
 @patch("py_load_eudravigilance.run.discover_files")
 @patch("py_load_eudravigilance.run.filter_completed_files")
@@ -129,5 +131,5 @@ def test_run_etl_no_files_to_process(mock_filter, mock_discover, mock_settings):
     mock_filter.return_value = {} # No new files
 
     with patch("py_load_eudravigilance.run.process_files_parallel") as mock_process_parallel:
-        etl_run.run_etl(mock_settings)
+        etl_run.run_etl(mock_settings, mode="delta")
         mock_process_parallel.assert_not_called()

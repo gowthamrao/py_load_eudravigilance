@@ -307,6 +307,30 @@ class PostgresLoader(LoaderInterface):
             result = connection.execute(query)
             return {row[0] for row in result}
 
+    def _get_table_metadata(self, table_name: str) -> Dict[str, Any]:
+        """
+        Dynamically retrieves primary key and version key for a given table
+        by inspecting the database via the engine.
+        """
+        inspector = sqlalchemy.inspect(self.engine)
+
+        if not inspector.has_table(table_name):
+            raise ValueError(f"Table '{table_name}' not found in database.")
+
+        # Get primary keys
+        pk_constraint = inspector.get_pk_constraint(table_name)
+        primary_keys = pk_constraint['constrained_columns']
+
+        # Find version key by checking column comments
+        version_key = None
+        columns = inspector.get_columns(table_name)
+        for col in columns:
+            if col.get("comment") == "VERSION_KEY":
+                version_key = col["name"]
+                break
+
+        return {"pk": primary_keys, "version_key": version_key}
+
     def load_normalized_data(
         self,
         buffers: Dict[str, IOBase],
@@ -319,16 +343,6 @@ class PostgresLoader(LoaderInterface):
         Orchestrates the loading of multiple normalized data buffers into their
         respective tables within a single transaction.
         """
-        TABLE_METADATA = {
-            "icsr_master": {"pk": ["safetyreportid"], "version_key": "receiptdate"},
-            "patient_characteristics": {"pk": ["safetyreportid"], "version_key": None},
-            "reactions": {"pk": ["safetyreportid", "reactionmeddrapt"], "version_key": None},
-            "drugs": {"pk": ["safetyreportid", "drug_seq"], "version_key": None},
-            "drug_substances": {"pk": ["safetyreportid", "drug_seq", "activesubstancename"], "version_key": None},
-            "tests_procedures": {"pk": ["safetyreportid", "testname"], "version_key": None},
-            "case_summary_narrative": {"pk": ["safetyreportid"], "version_key": None},
-        }
-
         self.manage_transaction("BEGIN")
         try:
             total_rows = sum(row_counts.values())
@@ -337,9 +351,7 @@ class PostgresLoader(LoaderInterface):
             for table_name, buffer in buffers.items():
                 if row_counts.get(table_name, 0) > 0:
                     print(f"Processing table: {table_name}")
-                    metadata = TABLE_METADATA.get(table_name)
-                    if not metadata:
-                        raise ValueError(f"No metadata defined for table {table_name}")
+                    table_meta = self._get_table_metadata(table_name)
 
                     staging_table = self.prepare_load(
                         target_table=table_name, load_mode=load_mode
@@ -356,8 +368,8 @@ class PostgresLoader(LoaderInterface):
                         self.handle_upsert(
                             staging_table=staging_table,
                             target_table=table_name,
-                            primary_keys=metadata["pk"],
-                            version_key=metadata["version_key"],
+                            primary_keys=table_meta["pk"],
+                            version_key=table_meta["version_key"],
                         )
 
             self._log_file_status(file_path, file_hash, "completed", total_rows)
@@ -384,7 +396,7 @@ class PostgresLoader(LoaderInterface):
         `icsr_audit_log` table within a single transaction.
         """
         TABLE_NAME = "icsr_audit_log"
-        METADATA = {"pk": ["safetyreportid"], "version_key": "receiptdate"}
+        table_meta = self._get_table_metadata(TABLE_NAME)
 
         self.manage_transaction("BEGIN")
         try:
@@ -403,8 +415,8 @@ class PostgresLoader(LoaderInterface):
                 self.handle_upsert(
                     staging_table=staging_table,
                     target_table=TABLE_NAME,
-                    primary_keys=METADATA["pk"],
-                    version_key=METADATA["version_key"],
+                    primary_keys=table_meta["pk"],
+                    version_key=table_meta["version_key"],
                 )
 
             self._log_file_status(file_path, file_hash, "completed_audit", row_count)

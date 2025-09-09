@@ -49,6 +49,12 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
                 del elem.getparent()[0]
             continue
 
+        # A.1.1: Sender Identifier
+        sender_id = _find_text(elem, ".//hl7:messagesenderidentifier")
+
+        # A.1.2: Receiver Identifier
+        receiver_id = _find_text(elem, ".//hl7:messagereceiveridentifier")
+
         # C.1.1: Safety Report Unique Identifier
         safety_report_id = _find_text(report_elem, ".//hl7:safetyreportid")
 
@@ -60,6 +66,15 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
         # and treat a value of 'true' as a nullification instruction.
         nullification_text = _find_text(report_elem, ".//hl7:reportnullification")
         is_nullified = nullification_text and nullification_text.lower() == "true"
+
+        # C.2.r: Primary Source(s) - we take the first for the master table
+        primary_source_elem = report_elem.find("hl7:primarysource", namespaces=NAMESPACES)
+        reporter_country = None
+        qualification = None
+
+        if primary_source_elem is not None:
+            reporter_country = _find_text(primary_source_elem, "hl7:reportercountry")
+            qualification = _find_text(primary_source_elem, "hl7:qualification")
 
         # D: Patient Characteristics
         patient_elem = report_elem.find("hl7:patient", namespaces=NAMESPACES)
@@ -135,12 +150,20 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
         # Yield a dictionary representing the parsed ICSR with nested lists.
         if safety_report_id:
             yield {
+                # A Section
+                "senderidentifier": sender_id,
+                "receiveridentifier": receiver_id,
+                # C Section
                 "safetyreportid": safety_report_id,
                 "receiptdate": receipt_date,
                 "is_nullified": is_nullified,
+                "reportercountry": reporter_country,
+                "qualification": qualification,
+                # D Section
                 "patientinitials": patient_initials,
                 "patientonsetage": patient_age,
                 "patientsex": patient_sex,
+                # E, G, F, H Sections
                 "reactions": reactions_list,
                 "drugs": drugs_list,
                 "tests": tests_list,

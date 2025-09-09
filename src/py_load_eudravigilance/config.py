@@ -24,6 +24,7 @@ class Settings:
     source_uri: Optional[str] = None
     schema_type: str = "normalized"
     quarantine_uri: Optional[str] = None
+    xsd_schema_path: Optional[str] = None
 
 
 def load_config(path: str = f"./{CONFIG_FILE_NAME}") -> Settings:
@@ -47,11 +48,13 @@ def load_config(path: str = f"./{CONFIG_FILE_NAME}") -> Settings:
     source_uri_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_SOURCE_URI")
     schema_type_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_SCHEMA_TYPE")
     quarantine_uri_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_QUARANTINE_URI")
+    xsd_schema_path_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_XSD_SCHEMA_PATH")
 
     db_dsn = db_dsn_env or config_from_file.get("database", {}).get("dsn")
     source_uri = source_uri_env or config_from_file.get("source_uri")
     schema_type = schema_type_env or config_from_file.get("schema_type", "normalized")
     quarantine_uri = quarantine_uri_env or config_from_file.get("quarantine_uri")
+    xsd_schema_path = xsd_schema_path_env or config_from_file.get("xsd_schema_path")
 
     if not db_dsn:
         raise ValueError("Database DSN must be provided in config.yaml or via PY_LOAD_EUDRAVIGILANCE_DATABASE_DSN env var.")
@@ -64,6 +67,7 @@ def load_config(path: str = f"./{CONFIG_FILE_NAME}") -> Settings:
         source_uri=source_uri,
         schema_type=schema_type,
         quarantine_uri=quarantine_uri,
+        xsd_schema_path=xsd_schema_path,
     )
 
 def _load_config_from_yaml(path: str) -> Dict[str, Any]:

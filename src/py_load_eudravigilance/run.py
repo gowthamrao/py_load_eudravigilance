@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def run_etl(settings: Settings, mode: str, max_workers: int | None = None):
+def run_etl(settings: Settings, mode: str, max_workers: int | None = None, validate: bool = False):
     """
     The main entry point for the ETL orchestration.
 
@@ -23,10 +23,14 @@ def run_etl(settings: Settings, mode: str, max_workers: int | None = None):
         settings: The application configuration.
         mode: The load mode ('delta' or 'full').
         max_workers: The maximum number of processes to use. Defaults to CPU count.
+        validate: Whether to perform XSD validation before processing.
     """
     logger.info(f"Starting ETL process in '{mode}' mode...")
     logger.info(f"Schema type: {settings.schema_type}")
     logger.info(f"Source URI: {settings.source_uri}")
+    if validate:
+        logger.info(f"XSD Validation: ENABLED. Schema path: {settings.xsd_schema_path}")
+
 
     # Step 1: Discover files using fsspec
     all_files = discover_files(settings.source_uri)
@@ -48,7 +52,7 @@ def run_etl(settings: Settings, mode: str, max_workers: int | None = None):
 
     # Step 3: Process files in parallel
     if files_to_process_map:
-        process_files_parallel(files_to_process_map, settings, mode, max_workers)
+        process_files_parallel(files_to_process_map, settings, mode, max_workers, validate)
 
     logger.info("ETL process finished.")
 
@@ -130,7 +134,7 @@ from . import parser, transformer, loader
 from typing import Tuple
 
 def process_files_parallel(
-    files_map: dict[str, str], settings: Settings, mode: str, max_workers: int | None = None
+    files_map: dict[str, str], settings: Settings, mode: str, max_workers: int | None = None, validate: bool = False
 ):
     """
     Processes a dictionary of files in parallel using a process pool.
@@ -139,7 +143,7 @@ def process_files_parallel(
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks to the executor
         future_to_file = {
-            executor.submit(process_file, path, hash_val, settings, mode): path
+            executor.submit(process_file, path, hash_val, settings, mode, validate): path
             for path, hash_val in files_map.items()
         }
 
@@ -210,8 +214,51 @@ def _process_audit_file(
     return True, f"Loaded {count} records into audit schema."
 
 
+from lxml import etree
+
+
+def _quarantine_file(file_path: str, file_hash: str, settings: Settings, error: Exception):
+    """Moves a failed file and its error metadata to the quarantine location."""
+    if not settings.quarantine_uri:
+        return
+
+    try:
+        # Use fsspec to handle local or remote filesystems seamlessly
+        fs, dest_folder = fsspec.core.url_to_fs(settings.quarantine_uri)
+        base_filename = os.path.basename(file_path)
+        dest_path = os.path.join(dest_folder, base_filename)
+        meta_path = dest_path + ".meta.json"
+
+        # Ensure the quarantine directory exists
+        fs.makedirs(dest_folder, exist_ok=True)
+
+        # Create metadata content
+        error_meta = {
+            "failed_at": datetime.utcnow().isoformat(),
+            "source_file": file_path,
+            "file_hash": file_hash,
+            "error_message": str(error),
+            "error_type": error.__class__.__name__,
+        }
+        # Write metadata file to quarantine
+        with fs.open(meta_path, "w") as meta_f:
+            json.dump(error_meta, meta_f, indent=2)
+        logger.info(f"Wrote failure metadata to: {meta_path}")
+
+        # Move the actual failed file
+        # fs.mv does not support moving between different filesystems
+        # so we copy and then delete.
+        source_fs, source_path = fsspec.core.url_to_fs(file_path)
+        source_fs.get(source_path, dest_path)
+        source_fs.rm(source_path)
+        logger.info(f"Moved failed file to quarantine: {dest_path}")
+
+    except Exception as q_exc:
+        logger.error(f"Could not move file to quarantine. Error: {q_exc}", exc_info=True)
+
+
 def process_file(
-    file_path: str, file_hash: str, settings: Settings, mode: str
+    file_path: str, file_hash: str, settings: Settings, mode: str, validate: bool = False
 ) -> Tuple[bool, str]:
     """
     Processes a single file: opens, parses, transforms, and loads its data.
@@ -223,6 +270,30 @@ def process_file(
         # The loader must be instantiated within the worker process
         db_loader = loader.get_loader(settings.database.dsn)
 
+        # --- First Pass: Optional XSD Validation ---
+        if validate:
+            if not settings.xsd_schema_path or not os.path.exists(settings.xsd_schema_path):
+                raise FileNotFoundError(f"XSD schema not found at path: {settings.xsd_schema_path}")
+
+            logger.info(f"Performing XSD validation for {file_path}...")
+            try:
+                xmlschema_doc = etree.parse(settings.xsd_schema_path)
+                xmlschema = etree.XMLSchema(xmlschema_doc)
+                validating_parser = etree.XMLParser(schema=xmlschema)
+
+                # Stream the file and feed the parser to validate without storing the tree
+                with fsspec.open(file_path, "rb") as f:
+                    while chunk := f.read(16384):
+                        validating_parser.feed(chunk)
+                # Finalize validation by closing the parser. This is what triggers the error.
+                validating_parser.close()
+                logger.info(f"XSD validation successful for {file_path}.")
+            except etree.XMLSyntaxError as e:
+                logger.error(f"XSD validation failed for {file_path}: {e}")
+                _quarantine_file(file_path, file_hash, settings, e)
+                return False, f"XSD validation failed: {e}"
+
+        # --- Second Pass: Parsing and Loading ---
         with fsspec.open(file_path, "rb") as f:
             if settings.schema_type == "normalized":
                 return _process_normalized_file(f, db_loader, file_path, file_hash, mode)
@@ -236,35 +307,5 @@ def process_file(
 
     except Exception as e:
         logger.error(f"Failed to process {file_path}: {e}", exc_info=True)
-        if settings.quarantine_uri:
-            try:
-                protocol = fsspec.utils.get_protocol(file_path)
-                fs = fsspec.filesystem(protocol)
-                base_filename = os.path.basename(file_path)
-                dest_path = os.path.join(settings.quarantine_uri, base_filename)
-                meta_path = dest_path + ".meta.json"
-
-                # Ensure the quarantine directory exists.
-                fs.makedirs(settings.quarantine_uri, exist_ok=True)
-
-                # Create metadata content
-                error_meta = {
-                    "failed_at": datetime.utcnow().isoformat(),
-                    "source_file": file_path,
-                    "file_hash": file_hash,
-                    "error_message": str(e),
-                }
-                # Write metadata file to quarantine
-                with fs.open(meta_path, "w") as meta_f:
-                    json.dump(error_meta, meta_f, indent=2)
-                logger.info(f"Wrote failure metadata to: {meta_path}")
-
-                # Move the actual failed file
-                fs.mv(file_path, dest_path)
-                logger.info(f"Moved failed file to quarantine: {dest_path}")
-
-            except Exception as q_exc:
-                logger.error(f"Could not move file to quarantine. Error: {q_exc}", exc_info=True)
-                raise q_exc
-
+        _quarantine_file(file_path, file_hash, settings, e)
         return False, str(e)

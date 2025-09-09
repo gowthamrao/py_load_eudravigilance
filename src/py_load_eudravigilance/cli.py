@@ -40,6 +40,13 @@ def run(
             help="Load mode: 'delta' for incremental upserts or 'full' for a full refresh."
         ),
     ] = "delta",
+    validate: Annotated[
+        bool,
+        typer.Option(
+            "--validate",
+            help="Enable XSD validation for each XML file before processing. Requires xsd_schema_path in config.",
+        ),
+    ] = False,
     workers: Annotated[
         int,
         typer.Option(
@@ -78,11 +85,15 @@ def run(
         typer.secho("Error: A source URI must be provided via argument or in the config file.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    typer.echo(f"Starting ETL process (mode: {mode}, workers: {workers})")
+    if validate and not settings.xsd_schema_path:
+        typer.secho("Error: --validate flag requires 'xsd_schema_path' to be set in the config file.", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Starting ETL process (mode: {mode}, workers: {workers}, validate: {validate})")
 
     # 2. Call the main ETL orchestration function
     try:
-        etl_run.run_etl(settings, mode=mode, max_workers=workers)
+        etl_run.run_etl(settings, mode=mode, max_workers=workers, validate=validate)
         typer.secho("\nETL process completed successfully.", fg=typer.colors.GREEN)
     except Exception as e:
         typer.secho(f"\nAn error occurred during the ETL process: {e}", fg=typer.colors.RED)

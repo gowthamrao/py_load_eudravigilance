@@ -21,6 +21,7 @@ from .config import load_config, CONFIG_FILE_NAME
 from .loader import get_loader
 from .parser import parse_icsr_xml, parse_icsr_xml_for_audit, validate_xml_with_xsd
 from .transformer import transform_and_normalize, transform_for_audit
+from . import schema as db_schema
 
 # Create a Typer application instance
 app = typer.Typer(
@@ -311,6 +312,48 @@ def validate(
     )
 
     if invalid_count > 0:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def validate_db_schema(
+    config_file: Annotated[
+        Path,
+        typer.Option(
+            "--config",
+            "-c",
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            resolve_path=True,
+            help=f"Path to the configuration file (default: ./{CONFIG_FILE_NAME}).",
+        ),
+    ] = f"./{CONFIG_FILE_NAME}",
+):
+    """
+    Validates that the live database schema matches the expected schema model.
+    """
+    typer.echo("Connecting to database for schema validation...")
+    try:
+        settings = load_config(path=str(config_file))
+        loader = get_loader(settings.database.dsn)
+
+        typer.echo("Running schema validation...")
+        # We pass the tables dictionary from our central schema definition
+        loader.validate_schema(db_schema.metadata.tables)
+
+        typer.secho(
+            "Schema validation successful. The database schema matches the expected definitions.",
+            fg=typer.colors.GREEN,
+        )
+    except ValueError as e:
+        # ValueError is raised by our validation logic on failure
+        typer.secho("Schema Validation Failed:", fg=typer.colors.RED)
+        typer.secho(str(e), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+    except Exception as e:
+        typer.secho(f"An unexpected error occurred during validation: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
 

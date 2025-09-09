@@ -13,6 +13,9 @@ from typing import Any, Dict, Generator, IO
 
 from typing import Dict, Tuple
 
+from . import schema as db_schema
+
+
 def transform_and_normalize(
     icsr_generator: Generator[Dict[str, Any], None, None]
 ) -> Tuple[Dict[str, io.StringIO], Dict[str, int]]:
@@ -21,7 +24,8 @@ def transform_and_normalize(
     in-memory CSV buffers, one for each target relational table.
 
     This function implements the "T" phase of the ETL, creating normalized,
-    linkable data streams suitable for bulk loading.
+    linkable data streams suitable for bulk loading. It uses the central
+    `schema.py` module as the single source of truth for table structures.
 
     Args:
         icsr_generator: A generator yielding nested dictionaries from the parser.
@@ -31,44 +35,27 @@ def transform_and_normalize(
         - A dictionary mapping table names to `io.StringIO` CSV buffers.
         - A dictionary mapping table names to their respective row counts.
     """
-    # Define the schemas for our target tables
-    schemas = {
-        "icsr_master": [
-            "senderidentifier",
-            "receiveridentifier",
-            "safetyreportid",
-            "receiptdate",
-            "is_nullified",
-            "reportercountry",
-            "qualification",
-        ],
-        "patient_characteristics": [
-            "safetyreportid",
-            "patientinitials",
-            "patientonsetage",
-            "patientsex",
-        ],
-        "reactions": ["safetyreportid", "primarysourcereaction", "reactionmeddrapt"],
-        "drugs": [
-            "safetyreportid",
-            "drug_seq",
-            "drugcharacterization",
-            "medicinalproduct",
-            "drugstructuredosagenumb",
-            "drugstructuredosageunit",
-            "drugdosagetext",
-        ],
-        "drug_substances": ["safetyreportid", "drug_seq", "activesubstancename"],
-        "tests_procedures": [
-            "safetyreportid",
-            "testdate",
-            "testname",
-            "testresult",
-            "testresultunit",
-            "testcomments",
-        ],
-        "case_summary_narrative": ["safetyreportid", "narrative"],
-    }
+    # Define the target tables we will be transforming data for.
+    # This order is preserved when creating buffers and writers.
+    target_tables = [
+        "icsr_master",
+        "patient_characteristics",
+        "reactions",
+        "drugs",
+        "drug_substances",
+        "tests_procedures",
+        "case_summary_narrative",
+    ]
+
+    # Dynamically build the schema from the central schema definition.
+    # This ensures the transformer is always in sync with the database DDL.
+    # We exclude columns with server-side defaults (e.g., load_timestamp).
+    schemas = {}
+    for table_name in target_tables:
+        table_obj = db_schema.metadata.tables[table_name]
+        schemas[table_name] = [
+            c.name for c in table_obj.columns if c.server_default is None
+        ]
 
     # Initialize buffers, writers, and counts for each table
     buffers = {table: io.StringIO() for table in schemas}

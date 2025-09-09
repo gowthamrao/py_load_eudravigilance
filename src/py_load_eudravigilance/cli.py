@@ -18,7 +18,7 @@ import sqlalchemy
 from typing_extensions import Annotated
 
 from .config import load_config, CONFIG_FILE_NAME
-from .loader import PostgresLoader
+from .loader import get_loader
 from .parser import parse_icsr_xml, parse_icsr_xml_for_audit
 from .transformer import transform_and_normalize, transform_for_audit
 
@@ -44,7 +44,7 @@ def process_single_file(
     try:
         file_hash = hashlib.sha256(file_content).hexdigest()
         # Each worker creates its own loader and engine from the DSN
-        loader = PostgresLoader(db_dsn)
+        loader = get_loader(db_dsn)
 
         file_buffer = io.BytesIO(file_content)
 
@@ -152,7 +152,7 @@ def run(
     files_to_process = []
     if mode == "delta":
         typer.echo("Fetching history of completed files...")
-        main_loader = PostgresLoader(settings.database.dsn)
+        main_loader = get_loader(settings.database.dsn)
         completed_hashes = main_loader.get_completed_file_hashes()
         typer.echo(f"Found {len(completed_hashes)} previously processed files to skip.")
         for file in input_files:
@@ -240,7 +240,7 @@ def init_db(
     try:
         settings = load_config(path=str(config_file))
         # The DSN is now passed to the loader, not the engine directly
-        loader = PostgresLoader(settings.database.dsn)
+        loader = get_loader(settings.database.dsn)
         loader.create_all_tables()
         typer.secho(
             "Database initialization complete. All tables created.",

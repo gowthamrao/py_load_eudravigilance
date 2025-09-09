@@ -7,89 +7,38 @@ It is responsible for all database interactions, including native bulk loading.
 """
 import psycopg2
 import sqlalchemy
-from abc import ABC, abstractmethod
 from io import IOBase
 from typing import Any, Dict, List
 
+import psycopg2
+import sqlalchemy
 from psycopg2.extensions import connection as PgConnection
-from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine.url import make_url
 
+from .interfaces import LoaderInterface
 from .schema import metadata
 
 
-# Using Any for Connection to avoid a premature driver import in the interface.
-# A concrete implementation would use its specific connection object.
-Connection = Any
-
-
-class LoaderInterface(ABC):
+def get_loader(dsn_or_engine: Any) -> LoaderInterface:
     """
-    Abstract Base Class for database loaders.
-
-    This interface defines the contract for all database-specific loaders,
-    ensuring that the core ETL logic remains independent of the target
-    database technology, as required by the Strategy Pattern design.
+    Factory function to get the appropriate database loader.
+    Inspects the DSN string to determine which loader to instantiate.
     """
-
-    @abstractmethod
-    def connect(self) -> Connection:
-        """Establish a connection using the appropriate native driver."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def validate_schema(self, schema_definition: Dict[str, Any]) -> bool:
-        """Verify the target database schema matches the expected definition."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def prepare_load(self, target_table: str, load_mode: str) -> str:
-        """
-        Execute pre-loading tasks and return the name of the staging table.
-
-        For example, truncate tables in 'full' mode or create temporary
-        staging tables.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def bulk_load_native(
-        self, data_stream: IOBase, target_table: str, columns: List[str]
-    ) -> None:
-        """
-        Stream data from data_stream into the target_table using the
-        database's native bulk load utility (e.g., COPY FROM STDIN).
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def handle_upsert(
-        self,
-        staging_table: str,
-        target_table: str,
-        primary_keys: List[str],
-        version_key: str,
-    ) -> None:
-        """
-        Implement the logic for merging data from a staging table into the
-        final target tables (MERGE/UPSERT).
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def manage_transaction(self, action: str) -> None:
-        """
-        Handle transaction boundaries (e.g., 'BEGIN', 'COMMIT', 'ROLLBACK').
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def create_all_tables(self) -> None:
-        """
-        Creates all necessary tables (data, metadata, audit) in the
-        target database if they don't already exist.
-        """
-        raise NotImplementedError
+    try:
+        url = make_url(str(dsn_or_engine))
+        if url.drivername.startswith("postgresql"):
+            return PostgresLoader(dsn_or_engine)
+        # Add other database dialects here in the future
+        # elif url.drivername.startswith("redshift"):
+        #     return RedshiftLoader(dsn_or_engine)
+        else:
+            raise ValueError(f"Unsupported database dialect: {url.drivername}")
+    except Exception as e:
+        # Fallback for DSNs that SQLAlchemy can't parse but psycopg2 can
+        if "postgres" in str(dsn_or_engine):
+             return PostgresLoader(dsn_or_engine)
+        raise ValueError(f"Could not determine database type from DSN: {e}")
 
 
 class PostgresLoader(LoaderInterface):

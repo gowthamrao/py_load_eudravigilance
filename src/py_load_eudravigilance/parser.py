@@ -213,6 +213,39 @@ def _element_to_dict(elem) -> Dict[str, Any]:
     return {tag: children}
 
 
+from typing import Tuple, List
+
+
+def validate_xml_with_xsd(xml_source: IO[bytes], xsd_path: str) -> Tuple[bool, List[str]]:
+    """
+    Validates an XML source against a given XSD schema file.
+
+    Args:
+        xml_source: A file-like object containing the XML data.
+        xsd_path: The file path to the XSD schema.
+
+    Returns:
+        A tuple containing:
+        - A boolean indicating if the validation was successful.
+        - A list of validation error messages, or an empty list if valid.
+    """
+    try:
+        # Load the XSD schema
+        xmlschema_doc = etree.parse(xsd_path)
+        xmlschema = etree.XMLSchema(xmlschema_doc)
+
+        # Load and validate the XML document
+        xml_doc = etree.parse(xml_source)
+        xmlschema.assertValid(xml_doc)
+        return True, []
+    except etree.DocumentInvalid as e:
+        return False, [str(e) for e in xmlschema.error_log]
+    except etree.XMLSyntaxError as e:
+        return False, [f"XML Syntax Error: {e}"]
+    except Exception as e:
+        return False, [f"An unexpected error occurred: {e}"]
+
+
 def parse_icsr_xml_for_audit(
     xml_source: IO[bytes],
 ) -> Generator[Dict[str, Any], None, None]:

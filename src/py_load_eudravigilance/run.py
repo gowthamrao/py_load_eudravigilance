@@ -166,6 +166,8 @@ def process_files_parallel(
 
 
 import os
+import json
+from datetime import datetime
 
 
 def _process_normalized_file(
@@ -236,20 +238,33 @@ def process_file(
         logger.error(f"Failed to process {file_path}: {e}", exc_info=True)
         if settings.quarantine_uri:
             try:
-                # Get the filesystem object for the source file's protocol
                 protocol = fsspec.utils.get_protocol(file_path)
                 fs = fsspec.filesystem(protocol)
+                base_filename = os.path.basename(file_path)
+                dest_path = os.path.join(settings.quarantine_uri, base_filename)
+                meta_path = dest_path + ".meta.json"
 
-                dest_path = os.path.join(settings.quarantine_uri, os.path.basename(file_path))
-
-                # Ensure the quarantine directory exists before moving the file.
+                # Ensure the quarantine directory exists.
                 fs.makedirs(settings.quarantine_uri, exist_ok=True)
+
+                # Create metadata content
+                error_meta = {
+                    "failed_at": datetime.utcnow().isoformat(),
+                    "source_file": file_path,
+                    "file_hash": file_hash,
+                    "error_message": str(e),
+                }
+                # Write metadata file to quarantine
+                with fs.open(meta_path, "w") as meta_f:
+                    json.dump(error_meta, meta_f, indent=2)
+                logger.info(f"Wrote failure metadata to: {meta_path}")
+
+                # Move the actual failed file
                 fs.mv(file_path, dest_path)
                 logger.info(f"Moved failed file to quarantine: {dest_path}")
+
             except Exception as q_exc:
                 logger.error(f"Could not move file to quarantine. Error: {q_exc}", exc_info=True)
-                # Re-raise to ensure the main process knows the ETL failed
                 raise q_exc
 
-        # We return False here, but the raised exception above is what signals failure
         return False, str(e)

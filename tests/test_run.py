@@ -1,4 +1,5 @@
 import io
+import json
 from unittest.mock import patch, MagicMock, call
 
 import pytest
@@ -174,3 +175,14 @@ def test_process_file_quarantine_on_failure(mock_settings, tmp_path):
         quarantined_file = quarantine_dir / "failed_file.xml"
         assert quarantined_file.exists()
         assert quarantined_file.read_text() == "<xml>fail</xml>"
+
+        # Check that the metadata file was created
+        meta_file = quarantine_dir / "failed_file.xml.meta.json"
+        assert meta_file.exists()
+        with open(meta_file, "r") as f:
+            meta_data = json.load(f)
+
+        assert meta_data["source_file"] == str(source_file)
+        assert meta_data["file_hash"] == "fail_hash"
+        assert "Simulated processing error" in meta_data["error_message"]
+        assert "failed_at" in meta_data

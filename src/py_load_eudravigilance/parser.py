@@ -78,8 +78,12 @@ def parse_icsr_xml(
             sender_id = _find_text(elem, ".//hl7:messagesenderidentifier")
             # A.1.2: Receiver Identifier
             receiver_id = _find_text(elem, ".//hl7:messagereceiveridentifier")
-            # C.1.5: Date of Most Recent Information
+            # C.1.4: Date of Receipt
             receipt_date = _find_text(report_elem, ".//hl7:receiptdate")
+            # C.1.5: Date of Most Recent Information (the true version key)
+            date_of_most_recent_info = _find_text(
+                report_elem, ".//hl7:dateofmostrecentinformation"
+            )
             # C.1.11: Nullification
             nullification_text = _find_text(report_elem, ".//hl7:reportnullification")
             is_nullified = nullification_text and nullification_text.lower() == "true"
@@ -156,13 +160,21 @@ def parse_icsr_xml(
             narrative = _find_text(report_elem, "hl7:narrativeincludeclinical")
 
             yield {
-                "senderidentifier": sender_id, "receiveridentifier": receiver_id,
-                "safetyreportid": safety_report_id, "receiptdate": receipt_date,
-                "is_nullified": is_nullified, "reportercountry": reporter_country,
-                "qualification": qualification, "patientinitials": patient_initials,
-                "patientonsetage": patient_age, "patientsex": patient_sex,
-                "reactions": reactions_list, "drugs": drugs_list,
-                "tests": tests_list, "narrative": narrative,
+                "senderidentifier": sender_id,
+                "receiveridentifier": receiver_id,
+                "safetyreportid": safety_report_id,
+                "receiptdate": receipt_date,
+                "date_of_most_recent_info": date_of_most_recent_info,
+                "is_nullified": is_nullified,
+                "reportercountry": reporter_country,
+                "qualification": qualification,
+                "patientinitials": patient_initials,
+                "patientonsetage": patient_age,
+                "patientsex": patient_sex,
+                "reactions": reactions_list,
+                "drugs": drugs_list,
+                "tests": tests_list,
+                "narrative": narrative,
             }
 
         except InvalidICSRError as e:

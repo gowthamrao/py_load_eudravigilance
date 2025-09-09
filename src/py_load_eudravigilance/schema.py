@@ -12,8 +12,11 @@ icsr_master = sqlalchemy.Table(
     metadata,
     sqlalchemy.Column("safetyreportid", sqlalchemy.String(255), primary_key=True),
     sqlalchemy.Column(
-        "receiptdate", sqlalchemy.String(255), comment="VERSION_KEY"
-    ),  # Version key
+        "date_of_most_recent_info",
+        sqlalchemy.String(255),
+        comment="VERSION_KEY",
+    ),  # C.1.5 - Correct version key
+    sqlalchemy.Column("receiptdate", sqlalchemy.String(255)),  # C.1.4
     sqlalchemy.Column("is_nullified", sqlalchemy.Boolean, default=False),
     # A Section
     sqlalchemy.Column("senderidentifier", sqlalchemy.String(255)),
@@ -119,8 +122,11 @@ icsr_audit_log = sqlalchemy.Table(
     metadata,
     sqlalchemy.Column("safetyreportid", sqlalchemy.String(255), primary_key=True),
     sqlalchemy.Column(
-        "receiptdate", sqlalchemy.String(255), comment="VERSION_KEY"
-    ),  # Version key
+        "date_of_most_recent_info",
+        sqlalchemy.String(255),
+        comment="VERSION_KEY",
+    ),  # C.1.5 - Correct version key
+    sqlalchemy.Column("receiptdate", sqlalchemy.String(255)),  # C.1.4
     sqlalchemy.Column("icsr_payload", JSONB),
     sqlalchemy.Column(
         "load_timestamp",

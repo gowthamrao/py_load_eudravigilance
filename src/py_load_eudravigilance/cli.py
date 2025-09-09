@@ -5,76 +5,24 @@ This module uses Typer to create a user-friendly CLI for running ETL
 processes, managing the database, and validating files.
 """
 
-import hashlib
-import io
 import os
-import concurrent.futures
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional
 
 import fsspec
 import typer
-import sqlalchemy
 from typing_extensions import Annotated
 
 from .config import load_config, CONFIG_FILE_NAME
 from .loader import get_loader
-from .parser import parse_icsr_xml, parse_icsr_xml_for_audit, validate_xml_with_xsd
-from .transformer import transform_and_normalize, transform_for_audit
+from .parser import validate_xml_with_xsd
 from . import schema as db_schema
+from . import run as etl_run
 
 # Create a Typer application instance
 app = typer.Typer(
     help="A high-performance ETL tool for EudraVigilance ICSR XML files."
 )
-
-
-def process_single_file(
-    file_content: bytes,
-    file_path: str,
-    db_dsn: str,
-    schema_type: str,
-    mode: str,
-) -> Dict[str, Any]:
-    """
-    Processes a single XML file content.
-
-    This function is designed to be called by a ProcessPoolExecutor. It
-    initializes its own database loader to ensure process safety.
-    """
-    result = {"path": file_path, "status": "failure", "parsing_errors": []}
-    try:
-        file_hash = hashlib.sha256(file_content).hexdigest()
-        loader = get_loader(db_dsn)
-        file_buffer = io.BytesIO(file_content)
-
-        if schema_type == "normalized":
-            icsr_generator = parse_icsr_xml(file_buffer)
-            buffers, row_counts, errors = transform_and_normalize(icsr_generator)
-            result["parsing_errors"] = errors
-            loader.load_normalized_data(
-                buffers=buffers,
-                row_counts=row_counts,
-                load_mode=mode,
-                file_path=file_path,
-                file_hash=file_hash,
-            )
-        elif schema_type == "audit":
-            # Note: Audit load does not yet support granular error reporting
-            icsr_generator = parse_icsr_xml_for_audit(file_buffer)
-            buffer, row_count = transform_for_audit(icsr_generator)
-            loader.load_audit_data(
-                buffer=buffer,
-                row_count=row_count,
-                load_mode=mode,
-                file_path=file_path,
-                file_hash=file_hash,
-            )
-        result["status"] = "success"
-        return result
-    except Exception as e:
-        print(f"Error processing file {file_path} in worker: {e}")
-        return result
 
 
 @app.command()
@@ -113,130 +61,39 @@ def run(
     ] = f"./{CONFIG_FILE_NAME}",
 ):
     """
-    Run the full ETL pipeline in parallel: Parse, Transform, and Load XML files.
+    Run the full ETL pipeline: Discover, Parse, Transform, and Load XML files.
     """
-    # 1. Load Configuration and create main engine
+    # 1. Load Configuration
     try:
         settings = load_config(path=str(config_file))
-        engine = sqlalchemy.create_engine(settings.database.dsn)
     except (ValueError, FileNotFoundError) as e:
         typer.secho(f"Configuration Error: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    final_source_uri = source_uri or settings.source_uri
-    if not final_source_uri:
-        typer.secho("Error: A source URI must be provided.", fg=typer.colors.RED)
+    # Override config with CLI arguments if provided
+    if source_uri:
+        settings.source_uri = source_uri
+
+    # The 'mode' is not yet used by the new run module, but could be in the future.
+    # For now, the run module implicitly handles 'delta' logic.
+    # A full implementation would pass this 'mode' to the run_etl function.
+    if mode == 'full':
+        typer.secho("Warning: 'full' mode is not fully implemented in the new run module yet. Running as 'delta'.", fg=typer.colors.YELLOW)
+
+
+    if not settings.source_uri:
+        typer.secho("Error: A source URI must be provided via argument or in the config file.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
     typer.echo(f"Starting ETL process (mode: {mode}, workers: {workers})")
-    typer.echo(f"Source: {final_source_uri}")
 
-    # 2. Use fsspec to find files
+    # 2. Call the main ETL orchestration function
     try:
-        input_files = fsspec.open_files(final_source_uri, mode="rb")
-        if not input_files:
-            typer.secho("No files found at the specified URI.", fg=typer.colors.YELLOW)
-            raise typer.Exit()
+        etl_run.run_etl(settings, max_workers=workers)
+        typer.secho("\nETL process completed successfully.", fg=typer.colors.GREEN)
     except Exception as e:
-        typer.secho(f"Error accessing source files: {e}", fg=typer.colors.RED)
+        typer.secho(f"\nAn error occurred during the ETL process: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
-
-    files_to_process = []
-    if mode == "delta":
-        typer.echo("Fetching history of completed files...")
-        main_loader = get_loader(settings.database.dsn)
-        completed_hashes = main_loader.get_completed_file_hashes()
-        typer.echo(f"Found {len(completed_hashes)} previously processed files to skip.")
-        for file in input_files:
-            with file as f:
-                content = f.read()
-                file_hash = hashlib.sha256(content).hexdigest()
-                if file_hash not in completed_hashes:
-                    files_to_process.append((content, file.path))
-                else:
-                    typer.secho(f"Skipping already processed file: {file.path}", fg=typer.colors.YELLOW)
-    else: # full mode
-        for file in input_files:
-             with file as f:
-                content = f.read()
-                files_to_process.append((content, file.path))
-
-    if not files_to_process:
-        typer.secho("No new files to process.", fg=typer.colors.GREEN)
-        raise typer.Exit()
-
-    typer.echo(f"Found {len(files_to_process)} files to process.")
-
-    files_processed = 0
-    files_failed = 0
-    total_parsing_errors = 0
-
-    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
-        future_to_result = {
-            executor.submit(
-                process_single_file,
-                content,
-                path,
-                settings.database.dsn,
-                settings.schema_type,
-                mode,
-            ): path
-            for content, path in files_to_process
-        }
-
-        # 4. Process results and handle failures (DLQ)
-        fs, _, _ = fsspec.get_fs_token_paths(final_source_uri)
-        for future in concurrent.futures.as_completed(future_to_result):
-            path = future_to_result[future]
-            try:
-                result = future.result()
-                status = result["status"]
-                parsing_errors = result["parsing_errors"]
-
-                if parsing_errors:
-                    total_parsing_errors += len(parsing_errors)
-                    typer.secho(
-                        f"File {path} processed with {len(parsing_errors)} parsing errors:",
-                        fg=typer.colors.YELLOW,
-                    )
-                    for error in parsing_errors:
-                        typer.secho(f"  - {error}", fg=typer.colors.YELLOW)
-
-                if status == "success":
-                    files_processed += 1
-                    typer.secho(f"Successfully processed file: {path}", fg=typer.colors.GREEN)
-
-                elif status == "failure":
-                    files_failed += 1
-                    typer.secho(f"Failed to process file: {path}", fg=typer.colors.RED)
-                    if settings.quarantine_uri:
-                        try:
-                            # Ensure the quarantine directory exists
-                            fs.mkdirs(settings.quarantine_uri, exist_ok=True)
-                            # Construct destination path
-                            file_name = os.path.basename(path)
-                            dest_path = os.path.join(settings.quarantine_uri, file_name)
-                            # Move the file
-                            fs.mv(path, dest_path)
-                            typer.secho(f"  -> Moved failed file to: {dest_path}", fg=typer.colors.YELLOW)
-                        except Exception as mv_exc:
-                            typer.secho(f"  -> Failed to move file to quarantine: {mv_exc}", fg=typer.colors.RED)
-                    else:
-                        typer.secho("  -> Quarantine URI not set. Failed file was not moved.", fg=typer.colors.YELLOW)
-            except Exception as exc:
-                files_failed += 1
-                typer.secho(f"File {path} generated an exception: {exc}", fg=typer.colors.RED)
-
-    summary_color = typer.colors.GREEN if files_failed == 0 else typer.colors.YELLOW
-    typer.secho(
-        f"\nETL process finished. {files_processed} files processed successfully, "
-        f"{files_failed} failed. Found {total_parsing_errors} parsing errors.",
-        fg=summary_color,
-    )
-    if files_failed > 0:
-        raise typer.Exit(code=1)
-
-    engine.dispose()
 
 
 @app.command()

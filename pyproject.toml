@@ -11,8 +11,9 @@ packages = [{include = "py_load_eudravigilance", from = "src"}]
 python = "^3.10"
 lxml = "^4.9.3"
 pyyaml = "^6.0.1"
-# Core dependencies are minimal. Others are optional extras.
-fsspec = {version = "^2023.10.0", optional = true}
+# fsspec is a core dependency for file system abstraction.
+# Specific implementations (s3fs, etc.) are optional.
+fsspec = "^2023.10.0"
 s3fs = {version = "^2023.10.0", optional = true}
 gcsfs = {version = "^2023.10.0", optional = true}
 azure-storage-blob = {version = "^12.18.2", optional = true}
@@ -33,11 +34,11 @@ testcontainers = {version = "^3.7.1", extras = ["postgres"]}
 
 [tool.poetry.extras]
 postgres = ["psycopg2-binary", "sqlalchemy"]
-s3 = ["fsspec", "s3fs"]
-gcs = ["fsspec", "gcsfs"]
-azure = ["fsspec", "azure-storage-blob"]
+s3 = ["s3fs"]
+gcs = ["gcsfs"]
+azure = ["azure-storage-blob"]
 cli = ["typer"]
-all = ["psycopg2-binary", "sqlalchemy", "fsspec", "s3fs", "gcsfs", "azure-storage-blob", "typer"]
+all = ["psycopg2-binary", "sqlalchemy", "s3fs", "gcsfs", "azure-storage-blob", "typer"]
 
 
 [tool.poetry.scripts]

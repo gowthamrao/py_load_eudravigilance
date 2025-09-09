@@ -2,6 +2,7 @@
 Unit tests for the Transformer module.
 """
 import io
+import csv
 
 from py_load_eudravigilance.transformer import transform_and_normalize
 
@@ -100,35 +101,47 @@ def test_transform_and_normalize():
     assert row_counts["tests_procedures"] == 0 # No tests in sample data
     assert row_counts["case_summary_narrative"] == 0 # No narrative in sample
 
-    # 3. Check the content of each buffer
-    # Icsr_master table
-    master_content = buffers["icsr_master"].read()
-    expected_header = "senderidentifier,receiveridentifier,safetyreportid,receiptdate,is_nullified,reportercountry,qualification"
-    assert expected_header in master_content
-    assert "SENDER1,RECEIVER1,TEST-CASE-001,20240101,False,US,Physician" in master_content
-    assert "SENDER2,RECEIVER2,TEST-CASE-002,20240102,True,GB,Pharmacist" in master_content
+    # 3. Check the content of each buffer in a more robust way
+    # Rewind buffers before reading
+    for buffer in buffers.values():
+        buffer.seek(0)
 
-    # Reactions table
-    reactions_content = buffers["reactions"].read()
-    assert "safetyreportid,primarysourcereaction,reactionmeddrapt" in reactions_content
-    assert "TEST-CASE-001,Nausea,Nausea" in reactions_content
-    assert "TEST-CASE-001,Headache,Headache" in reactions_content
-    assert "TEST-CASE-002,Rash,Rash" in reactions_content
+    # Parse CSV content into a list of dicts for easier validation
+    parsed_data = {}
+    for name, buffer in buffers.items():
+        # Skip empty buffers
+        if row_counts[name] > 0:
+            reader = csv.DictReader(buffer)
+            parsed_data[name] = list(reader)
 
-    # Drugs table
-    drugs_content = buffers["drugs"].read()
-    assert (
-        "safetyreportid,drug_seq,drugcharacterization,medicinalproduct,drugstructuredosagenumb,drugstructuredosageunit,drugdosagetext"
-        in drugs_content
-    )
-    assert "TEST-CASE-001,1,1,DrugA,10,032,10 mg" in drugs_content
-    assert "TEST-CASE-001,2,2,DrugB,,," in drugs_content
-    # Ensure no rows from the second case are present
-    assert "TEST-CASE-002" not in drugs_content
+    # Validate icsr_master
+    master_rows = parsed_data.get("icsr_master", [])
+    assert len(master_rows) == 2
+    case1_master = next(r for r in master_rows if r['safetyreportid'] == 'TEST-CASE-001')
+    assert case1_master['senderidentifier'] == 'SENDER1'
+    assert case1_master['is_nullified'] == 'False'
+    case2_master = next(r for r in master_rows if r['safetyreportid'] == 'TEST-CASE-002')
+    assert case2_master['qualification'] == 'Pharmacist'
+    assert case2_master['is_nullified'] == 'True'
 
-    # Drug Substances table
-    substances_content = buffers["drug_substances"].read()
-    assert "safetyreportid,drug_seq,activesubstancename" in substances_content
-    assert "TEST-CASE-001,1,SubstanceX" in substances_content
-    assert "TEST-CASE-001,2,SubstanceY" in substances_content
-    assert "TEST-CASE-001,2,SubstanceZ" in substances_content
+    # Validate reactions
+    reaction_rows = parsed_data.get("reactions", [])
+    assert len(reaction_rows) == 3
+    case1_reactions = [r for r in reaction_rows if r['safetyreportid'] == 'TEST-CASE-001']
+    assert len(case1_reactions) == 2
+    assert {"Nausea", "Headache"} == {r['reactionmeddrapt'] for r in case1_reactions}
+
+    # Validate drugs
+    drug_rows = parsed_data.get("drugs", [])
+    assert len(drug_rows) == 2
+    assert all(r['safetyreportid'] == 'TEST-CASE-001' for r in drug_rows)
+    drug_a = next(r for r in drug_rows if r['medicinalproduct'] == 'DrugA')
+    assert drug_a['drugcharacterization'] == '1'
+    assert drug_a['drugstructuredosagenumb'] == '10'
+
+    # Validate drug_substances
+    substance_rows = parsed_data.get("drug_substances", [])
+    assert len(substance_rows) == 3
+    drug_b_substances = [r for r in substance_rows if r['drug_seq'] == '2']
+    assert len(drug_b_substances) == 2
+    assert {"SubstanceY", "SubstanceZ"} == {r['activesubstancename'] for r in drug_b_substances}

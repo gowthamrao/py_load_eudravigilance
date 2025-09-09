@@ -5,19 +5,22 @@ This module defines the database loader interface and provides concrete
 implementations for different database backends (e.g., PostgreSQL).
 It is responsible for all database interactions, including native bulk loading.
 """
-import psycopg2
-import sqlalchemy
 from io import IOBase
 from typing import Any, Dict, List
 
-import psycopg2
-import sqlalchemy
-from psycopg2.extensions import connection as PgConnection
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.engine.url import make_url
-
 from .interfaces import LoaderInterface
 from .schema import metadata
+
+try:
+    import psycopg2
+    import sqlalchemy
+    from psycopg2.extensions import connection as PgConnection
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlalchemy.engine.url import make_url
+except ImportError:
+    # This is a soft dependency, so we don't raise the error here.
+    # The error will be raised by get_loader if a postgres DSN is provided.
+    pass
 
 
 def get_loader(dsn_or_engine: Any) -> LoaderInterface:
@@ -25,19 +28,37 @@ def get_loader(dsn_or_engine: Any) -> LoaderInterface:
     Factory function to get the appropriate database loader.
     Inspects the DSN string to determine which loader to instantiate.
     """
+    dsn_str = str(dsn_or_engine)
     try:
-        url = make_url(str(dsn_or_engine))
+        # We check the DSN string itself first.
+        if "postgres" in dsn_str:
+            try:
+                # This will fail if the soft dependencies were not installed
+                return PostgresLoader(dsn_or_engine)
+            except NameError:
+                raise ImportError(
+                    "PostgreSQL dependencies are not installed. "
+                    "Please run: pip install 'py-load-eudravigilance[postgres]'"
+                )
+
+        # If not matched by simple string search, try SQLAlchemy parsing
+        url = make_url(dsn_str)
         if url.drivername.startswith("postgresql"):
-            return PostgresLoader(dsn_or_engine)
+            try:
+                return PostgresLoader(dsn_or_engine)
+            except NameError:
+                 raise ImportError(
+                    "PostgreSQL dependencies are not installed. "
+                    "Please run: pip install 'py-load-eudravigilance[postgres]'"
+                )
         # Add other database dialects here in the future
         # elif url.drivername.startswith("redshift"):
         #     return RedshiftLoader(dsn_or_engine)
         else:
             raise ValueError(f"Unsupported database dialect: {url.drivername}")
     except Exception as e:
-        # Fallback for DSNs that SQLAlchemy can't parse but psycopg2 can
-        if "postgres" in str(dsn_or_engine):
-             return PostgresLoader(dsn_or_engine)
+        if isinstance(e, ImportError):
+            raise  # Re-raise the specific ImportError
         raise ValueError(f"Could not determine database type from DSN: {e}")
 
 

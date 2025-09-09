@@ -120,3 +120,48 @@ def test_cli_integration_flow(postgres_container, db_engine, tmp_path):
     assert result_run2.exit_code == 0, f"Second run failed: {result_run2.stdout}"
     assert "Skipping already processed file" in result_run2.stdout
     assert "No new files to process" in result_run2.stdout
+
+
+def test_cli_dlq_flow(postgres_container, tmp_path):
+    """
+    Tests the Dead Letter Queue (DLQ) functionality.
+    1. `init-db` to create tables.
+    2. `run` with a malformed XML file.
+    3. Verifies the command exits with a failure code.
+    4. Verifies the malformed file is moved to the quarantine URI.
+    """
+    # 1. Prepare test files, directories, and config
+    config_path = tmp_path / "config.yaml"
+    source_data_path = tmp_path / "data"
+    quarantine_path = tmp_path / "quarantine"
+    source_data_path.mkdir()
+    quarantine_path.mkdir()
+
+    invalid_xml_path = source_data_path / "invalid_case.xml"
+    # This file is intentionally malformed (e.g., unclosed tag)
+    invalid_xml_content = "<root><safetyreport><safetyreportid>BAD-ID</safetyreport>"
+    invalid_xml_path.write_text(invalid_xml_content)
+
+    dsn = postgres_container.get_connection_url()
+    config_data = {
+        "database": {"dsn": dsn},
+        "source_uri": f"{str(source_data_path)}/*.xml",
+        "quarantine_uri": str(quarantine_path)
+    }
+    config_path.write_text(yaml.dump(config_data))
+
+    # 2. Run init-db
+    result_init = runner.invoke(app, ["init-db", "--config", str(config_path)])
+    assert result_init.exit_code == 0, f"init-db failed: {result_init.stdout}"
+
+    # 3. Run the ETL, which is expected to fail
+    result_run = runner.invoke(app, ["run", "--config", str(config_path), "--workers=1"])
+    assert result_run.exit_code == 1, "CLI should exit with a non-zero code for failed files."
+    assert "Failed to process file" in result_run.stdout
+    assert "Moved failed file to" in result_run.stdout
+
+    # 4. Verify the file was moved to the quarantine directory
+    assert not invalid_xml_path.exists()
+    quarantined_file = quarantine_path / "invalid_case.xml"
+    assert quarantined_file.exists()
+    assert quarantined_file.read_text() == invalid_xml_content

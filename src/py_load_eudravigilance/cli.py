@@ -192,6 +192,8 @@ def run(
             for content, path in files_to_process
         }
 
+        # 4. Process results and handle failures (DLQ)
+        fs, _, _ = fsspec.get_fs_token_paths(final_source_uri)
         for future in concurrent.futures.as_completed(future_to_path):
             path = future_to_path[future]
             try:
@@ -202,6 +204,21 @@ def run(
                 elif status == "failure":
                     files_failed += 1
                     typer.secho(f"Failed to process file: {path}", fg=typer.colors.RED)
+                    if settings.quarantine_uri:
+                        try:
+                            # Ensure the quarantine directory exists
+                            fs.mkdirs(settings.quarantine_uri, exist_ok=True)
+                            # Construct destination path
+                            file_name = os.path.basename(path)
+                            dest_path = os.path.join(settings.quarantine_uri, file_name)
+                            # Move the file
+                            fs.mv(path, dest_path)
+                            typer.secho(f"  -> Moved failed file to: {dest_path}", fg=typer.colors.YELLOW)
+                        except Exception as mv_exc:
+                            typer.secho(f"  -> Failed to move file to quarantine: {mv_exc}", fg=typer.colors.RED)
+                    else:
+                        typer.secho("  -> Quarantine URI not set. Failed file was not moved.", fg=typer.colors.YELLOW)
+
                 else: # Skipped
                     typer.secho(f"Skipped file (no data or already processed in worker): {path}", fg=typer.colors.YELLOW)
             except Exception as exc:

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ichicsrMessage xmlns="urn:hl7-org:v3">
+  <safetyreport>
+    <safetyreportid>VALID-CASE-1</safetyreportid>
+    <patient>
+      <patientinitials>A.B.</patientinitials>
+      <patientsex>1</patientsex>
+    </patient>
+  </safetyreport>
+</ichicsrMessage>

@@ -119,7 +119,7 @@ def test_run_etl_orchestration(mock_process_parallel, mock_filter, mock_discover
     mock_discover.assert_called_once_with(mock_settings.source_uri)
     mock_filter.assert_called_once_with(["file1.xml", "file2.xml"], mock_settings)
     mock_process_parallel.assert_called_once_with(
-        {"file1.xml": "hash1"}, mock_settings, "delta", 4
+        {"file1.xml": "hash1"}, mock_settings, "delta", 4, False
     )
 
 @patch("py_load_eudravigilance.run.discover_files")
@@ -186,3 +186,83 @@ def test_process_file_quarantine_on_failure(mock_settings, tmp_path):
         assert meta_data["file_hash"] == "fail_hash"
         assert "Simulated processing error" in meta_data["error_message"]
         assert "failed_at" in meta_data
+
+
+def test_process_file_with_xsd_validation(tmp_path):
+    """
+    Integration test for the XSD validation feature in the `process_file` worker.
+    """
+    # 1. --- Setup test environment ---
+    source_dir = tmp_path / "source"
+    quarantine_dir = tmp_path / "quarantine"
+    schema_dir = tmp_path / "schema"
+    source_dir.mkdir()
+    quarantine_dir.mkdir()
+    schema_dir.mkdir()
+
+    # Create test XSD
+    xsd_path = schema_dir / "test.xsd"
+    xsd_path.write_text("""\
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <xs:element name="ichicsrMessage">
+    <xs:complexType><xs:sequence>
+      <xs:element name="safetyreportid" type="xs:string"/>
+    </xs:sequence></xs:complexType>
+  </xs:element>
+</xs:schema>""")
+
+    # Mock settings
+    settings = Settings(
+        database=DatabaseConfig(dsn="postgresql://test:test@localhost/test"),
+        source_uri=str(source_dir / "*.xml"),
+        schema_type="normalized",
+        quarantine_uri=str(quarantine_dir),
+        xsd_schema_path=str(xsd_path)
+    )
+    mock_loader = MagicMock()
+    mock_transformer_result = ({'icsr_master': io.StringIO("hdr\nval")}, {'icsr_master': 1}, [])
+
+    # 2. --- Test Case: Validation enabled, valid file is processed ---
+    valid_file = source_dir / "valid.xml"
+    valid_file.write_text('<ichicsrMessage><safetyreportid>valid</safetyreportid></ichicsrMessage>')
+
+    with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader), \
+         patch("py_load_eudravigilance.transformer.transform_and_normalize", return_value=mock_transformer_result):
+
+        success, msg = etl_run.process_file(str(valid_file), "hash1", settings, "delta", validate=True)
+
+        assert success is True
+        mock_loader.load_normalized_data.assert_called_once()
+        assert not (quarantine_dir / "valid.xml").exists()
+
+    # 3. --- Test Case: Validation enabled, invalid file is quarantined ---
+    mock_loader.reset_mock()
+    invalid_file = source_dir / "invalid.xml"
+    invalid_file.write_text('<ichicsrMessage><wrongtag>invalid</wrongtag></ichicsrMessage>')
+
+    with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader):
+        success, msg = etl_run.process_file(str(invalid_file), "hash2", settings, "delta", validate=True)
+
+        assert success is False
+        assert "XSD validation failed" in msg
+        mock_loader.load_normalized_data.assert_not_called()
+        assert (quarantine_dir / "invalid.xml").exists()
+        assert (quarantine_dir / "invalid.xml.meta.json").exists()
+
+    # 4. --- Test Case: Validation disabled, invalid file is processed ---
+    # Clean up from previous step before running this case
+    (quarantine_dir / "invalid.xml").unlink()
+    (quarantine_dir / "invalid.xml.meta.json").unlink()
+    mock_loader.reset_mock()
+    # Recreate the invalid file in the source directory
+    invalid_file_path = source_dir / "invalid.xml"
+    invalid_file_path.write_text('<ichicsrMessage><wrongtag>invalid</wrongtag></ichicsrMessage>')
+
+    with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader), \
+         patch("py_load_eudravigilance.transformer.transform_and_normalize", return_value=mock_transformer_result):
+
+        success, msg = etl_run.process_file(str(invalid_file_path), "hash3", settings, "delta", validate=False)
+
+        assert success is True
+        mock_loader.load_normalized_data.assert_called_once()
+        assert not (quarantine_dir / "invalid.xml").exists()

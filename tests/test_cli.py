@@ -86,8 +86,14 @@ def test_cli_integration_flow(db_engine, tmp_path):
     valid_xml_path.write_text(valid_xml_content)
 
     # Config file pointing to the test container
-    db_url = db_engine.url
-    dsn = f"dbname={db_url.database} user={db_url.username} password={db_url.password} host={db_url.host} port={db_url.port}"
+    # Construct DSN manually from the container to get the raw password
+    dsn = (
+        f"dbname={postgres_container.dbname} "
+        f"user={postgres_container.username} "
+        f"password={postgres_container.password} "
+        f"host={postgres_container.get_container_host_ip()} "
+        f"port={postgres_container.get_exposed_port(5432)}"
+    )
     config_path.write_text(yaml.dump({"database": {"dsn": dsn}}))
 
     # 2. Run init-db to create the etl_file_history table
@@ -103,7 +109,7 @@ def test_cli_integration_flow(db_engine, tmp_path):
         conn.commit()
 
     # 4. Run the ETL for the first time
-    result_run1 = runner.invoke(app, ["run", str(valid_xml_path), "--config", str(config_path)])
+    result_run1 = runner.invoke(app, ["run", str(valid_xml_path), "--config", str(config_path), "--workers=1"])
     assert result_run1.exit_code == 0, f"First run failed: {result_run1.stdout}"
     assert "Successfully processed file" in result_run1.stdout
 

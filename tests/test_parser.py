@@ -21,8 +21,8 @@ def test_parse_icsr_xml_with_nested_data():
     with open(sample_file_path, "rb") as f:
         parsed_icsrs = list(parse_icsr_xml(f))
 
-    # 1. Assert that all three ICSR messages in the file were parsed.
-    assert len(parsed_icsrs) == 3
+    # 1. Assert that all five ICSR messages in the file were parsed.
+    assert len(parsed_icsrs) == 5
 
     # 2. Assert the content of the first ICSR (with nested data) is correct.
     case1 = parsed_icsrs[0]

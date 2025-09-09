@@ -107,4 +107,56 @@
       <receiptdate>20240103</receiptdate>
     </safetyreport>
   </ichicsrMessage>
+  <ichicsrMessage>
+    <messageheader>
+      <messagetype>ichicsr</messagetype>
+      <messageformatversion>2.1</messageformatversion>
+      <messagesenderidentifier>TESTSENDER</messagesenderidentifier>
+      <messagereceiveridentifier>TESTRECEIVER</messagereceiveridentifier>
+      <messagedate>20240104120000</messagedate>
+    </messageheader>
+    <safetyreport>
+      <safetyreportversion>2</safetyreportversion>
+      <safetyreportid>TEST-CASE-002</safetyreportid>
+      <primarysourcecountry>GB</primarysourcecountry>
+      <occurcountry>GB</occurcountry>
+      <transmissiondateformat>204</transmissiondateformat>
+      <transmissiondate>20240104</transmissiondate>
+      <reporttype>4</reporttype> <!-- Nullification Report -->
+      <serious>2</serious>
+      <receivedateformat>102</receivedateformat>
+      <receivedate>20240104</receivedate>
+      <receiptdateformat>102</receiptdateformat>
+      <receiptdate>20240104</receiptdate>
+      <reportnullification>true</reportnullification>
+    </safetyreport>
+  </ichicsrMessage>
+  <ichicsrMessage>
+    <messageheader>
+      <messagetype>ichicsr</messagetype>
+      <messageformatversion>2.1</messageformatversion>
+      <messagesenderidentifier>TESTSENDER</messagesenderidentifier>
+      <messagereceiveridentifier>TESTRECEIVER</messagereceiveridentifier>
+      <messagedate>20240105120000</messagedate>
+    </messageheader>
+    <safetyreport>
+      <safetyreportversion>1</safetyreportversion>
+      <safetyreportid>TEST-CASE-004</safetyreportid>
+      <primarysourcecountry>FR</primarysourcecountry>
+      <occurcountry>FR</occurcountry>
+      <transmissiondateformat>204</transmissiondateformat>
+      <transmissiondate>20240105</transmissiondate>
+      <reporttype>1</reporttype>
+      <serious>1</serious>
+      <receivedateformat>102</receivedateformat>
+      <receivedate>20240105</receivedate>
+      <receiptdateformat>102</receiptdateformat>
+      <receiptdate>20240105</receiptdate>
+      <patient>
+        <patientinitials>AB</patientinitials>
+        <patientonsetage>30</patientonsetage>
+        <patientsex>1</patientsex>
+      </patient>
+    </safetyreport>
+  </ichicsrMessage>
 </ichicsr>

@@ -910,10 +910,9 @@ files = [
 name = "fsspec"
 version = "2023.12.2"
 description = "File-system specification"
-optional = true
+optional = false
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "extra == \"s3\" or extra == \"gcs\" or extra == \"azure\" or extra == \"all\""
 files = [
     {file = "fsspec-2023.12.2-py3-none-any.whl", hash = "sha256:d800d87f72189a745fa3d6b033b9dc4a34ad069f60ca60b943a63599f5501960"},
     {file = "fsspec-2023.12.2.tar.gz", hash = "sha256:8548d39e8810b59c38014934f6b31e57f40c1b20f911f4cc2b85389c7e9bf0cb"},
@@ -2681,14 +2680,14 @@ multidict = ">=4.0"
 propcache = ">=0.2.1"
 
 [extras]
-all = ["azure-storage-blob", "fsspec", "gcsfs", "psycopg2-binary", "s3fs", "sqlalchemy", "typer"]
-azure = ["azure-storage-blob", "fsspec"]
+all = ["azure-storage-blob", "gcsfs", "psycopg2-binary", "s3fs", "sqlalchemy", "typer"]
+azure = ["azure-storage-blob"]
 cli = ["typer"]
-gcs = ["fsspec", "gcsfs"]
+gcs = ["gcsfs"]
 postgres = ["psycopg2-binary", "sqlalchemy"]
-s3 = ["fsspec", "s3fs"]
+s3 = ["s3fs"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "6602708462057ae3663460da4c9623870e28d2dfd15549ae34fe58d3687a0c70"
+content-hash = "c7c94be081bcbfc13dede60e47b9be67bc6ed92e6410fc66cb08859b373eabbd"

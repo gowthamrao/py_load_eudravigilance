@@ -7,6 +7,7 @@ It is responsible for all database interactions, including native bulk loading.
 """
 import sqlalchemy
 from io import IOBase
+from importlib import metadata
 from typing import Any, Dict, List
 from sqlalchemy import Table, select
 from .interfaces import LoaderInterface
@@ -26,41 +27,48 @@ except ImportError:
 
 def get_loader(dsn_or_engine: Any) -> LoaderInterface:
     """
-    Factory function to get the appropriate database loader.
-    Inspects the DSN string to determine which loader to instantiate.
+    Factory function to get the appropriate database loader using a plugin system.
+    It discovers available loaders via the `py_load_eudravigilance.loaders`
+    entry point group.
     """
-    dsn_str = str(dsn_or_engine)
     try:
-        # We check the DSN string itself first.
-        if "postgres" in dsn_str:
-            try:
-                # This will fail if the soft dependencies were not installed
-                return PostgresLoader(dsn_or_engine)
-            except NameError:
-                raise ImportError(
-                    "PostgreSQL dependencies are not installed. "
-                    "Please run: pip install 'py-load-eudravigilance[postgres]'"
-                )
-
-        # If not matched by simple string search, try SQLAlchemy parsing
-        url = make_url(dsn_str)
-        if url.drivername.startswith("postgresql"):
-            try:
-                return PostgresLoader(dsn_or_engine)
-            except NameError:
-                 raise ImportError(
-                    "PostgreSQL dependencies are not installed. "
-                    "Please run: pip install 'py-load-eudravigilance[postgres]'"
-                )
-        # Add other database dialects here in the future
-        # elif url.drivername.startswith("redshift"):
-        #     return RedshiftLoader(dsn_or_engine)
-        else:
-            raise ValueError(f"Unsupported database dialect: {url.drivername}")
+        # Use SQLAlchemy to parse the DSN and identify the dialect
+        url = make_url(str(dsn_or_engine))
+        # The dialect name (e.g., 'postgresql', 'mysql') is used as the plugin key
+        dialect_name = url.get_dialect().name
     except Exception as e:
-        if isinstance(e, ImportError):
-            raise  # Re-raise the specific ImportError
-        raise ValueError(f"Could not determine database type from DSN: {e}")
+        raise ValueError(f"Could not determine database dialect from DSN: {e}")
+
+    # Discover registered loader plugins
+    try:
+        loaders = metadata.entry_points(group="py_load_eudravigilance.loaders")
+    except Exception as e:
+        # This can happen if the entry points are misconfigured.
+        raise RuntimeError(f"Could not load entry points: {e}") from e
+
+    # Find a matching loader by its registered name (which should match the dialect)
+    for ep in loaders:
+        if ep.name == dialect_name:
+            loader_class = ep.load()
+            try:
+                # Instantiate and return the loader
+                return loader_class(dsn_or_engine)
+            except NameError as ne:
+                # This typically means a soft dependency (like psycopg2) is missing.
+                # The original NameError is obscure, so we raise a more helpful error.
+                raise ImportError(
+                    f"Dependencies for the '{dialect_name}' loader are not installed. "
+                    f"Please install the required extras (e.g., 'pip install .[postgres]'). "
+                    f"Original error: {ne}"
+                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to instantiate loader for dialect '{dialect_name}'.") from e
+
+    # If no loader was found after checking all entry points
+    raise ValueError(
+        f"No registered loader found for database dialect '{dialect_name}'. "
+        f"Available loaders: {[ep.name for ep in loaders]}"
+    )
 
 
 class PostgresLoader(LoaderInterface):

@@ -165,3 +165,73 @@ def test_full_load_truncates_data(loader):
         count = conn.execute(sqlalchemy.text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
         # If TRUNCATE worked, the count should still be 1, not 2.
         assert count == 1
+
+
+def test_icsr_amendment_update(loader):
+    """
+    Tests that the delta load logic correctly handles ICSR amendments
+    by updating existing records based on the version key. This is a
+    critical test for the bug fix.
+    """
+    # 1. Ensure all application tables are created
+    loader.create_all_tables()
+
+    # 2. Define the initial version of an ICSR
+    report_id = "TEST-AMEND-01"
+    initial_csv = (
+        "safetyreportid,date_of_most_recent_info,receiptdate,is_nullified,senderidentifier\n"
+        f"{report_id},20250101,20250101,False,InitialSender\n"
+    )
+    initial_buffers = {"icsr_master": StringIO(initial_csv)}
+    initial_counts = {"icsr_master": 1}
+
+    # 3. Load the initial version
+    loader.load_normalized_data(
+        buffers=initial_buffers,
+        row_counts=initial_counts,
+        load_mode="delta",
+        file_path="/fake/amend/1",
+        file_hash="hash_amend_1",
+    )
+
+    # 4. Verify the initial state
+    with loader.engine.connect() as conn:
+        result = conn.execute(
+            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+        ).first()
+        assert result is not None
+        assert result._asdict()["senderidentifier"] == "InitialSender"
+        assert result._asdict()["date_of_most_recent_info"] == "20250101"
+
+    # 5. Define the amended (newer) version of the same ICSR
+    amended_csv = (
+        "safetyreportid,date_of_most_recent_info,receiptdate,is_nullified,senderidentifier\n"
+        f"{report_id},20250102,20250101,False,UpdatedSender\n"  # Newer date, new sender
+    )
+    amended_buffers = {"icsr_master": StringIO(amended_csv)}
+    amended_counts = {"icsr_master": 1}
+
+    # 6. Load the amended version
+    loader.load_normalized_data(
+        buffers=amended_buffers,
+        row_counts=amended_counts,
+        load_mode="delta",
+        file_path="/fake/amend/2",
+        file_hash="hash_amend_2",
+    )
+
+    # 7. Verify the final state
+    with loader.engine.connect() as conn:
+        # Check that there is still only one record
+        count = conn.execute(
+            sqlalchemy.text(f"SELECT COUNT(*) FROM icsr_master WHERE safetyreportid = '{report_id}'")
+        ).scalar_one()
+        assert count == 1
+
+        # Check that the record was updated
+        result = conn.execute(
+            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+        ).first()
+        assert result is not None
+        assert result._asdict()["senderidentifier"] == "UpdatedSender"
+        assert result._asdict()["date_of_most_recent_info"] == "20250102"

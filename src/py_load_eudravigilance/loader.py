@@ -280,18 +280,24 @@ class PostgresLoader(LoaderInterface):
 
         # Dynamically build the SET clause for the UPDATE part
         update_dict = {}
-        has_nullified_col = "is_nullified" in excluded
+        has_nullified_col = "is_nullified" in target_table_obj.c
 
         for col in target_table_obj.c:
             if col.name not in primary_keys and not col.server_default:
-                # Special handling for version key on tables with nullification
-                if col.name == version_key and has_nullified_col:
-                    # Don't update version if it's a nullification
+                if col.name == "is_nullified":
+                    # The nullification flag should always be updated from the source.
+                    update_dict[col.name] = excluded[col.name]
+                elif has_nullified_col:
+                    # For all other columns, keep the existing value if the new
+                    # record is a nullification; otherwise, take the new value.
+                    # This prevents overwriting data with nulls from a sparse
+                    # nullification record.
                     update_dict[col.name] = sqlalchemy.case(
                         (excluded.is_nullified, col),
-                        else_=excluded[col.name]
+                        else_=excluded[col.name],
                     )
                 else:
+                    # If the table doesn't have a nullification concept, always update.
                     update_dict[col.name] = excluded[col.name]
 
         # If there are columns to update, add the DO UPDATE clause
@@ -509,11 +515,17 @@ class PostgresLoader(LoaderInterface):
                         conn, target_table=TABLE_NAME, load_mode=load_mode
                     )
 
+                # The columns must match the CSV output of `transform_for_audit`
                 self.bulk_load_native(
                     conn,
                     buffer,
                     target_or_staging_table,
-                    columns=["safetyreportid", "receiptdate", "icsr_payload"],
+                    columns=[
+                        "safetyreportid",
+                        "date_of_most_recent_info",
+                        "receiptdate",
+                        "icsr_payload",
+                    ],
                 )
 
                 if load_mode == "delta":

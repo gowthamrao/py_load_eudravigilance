@@ -147,7 +147,7 @@ def transform_for_audit(
     buffer for the audit log table.
 
     This function de-duplicates ICSRs from the source based on safetyreportid,
-    keeping only the most recent version according to receiptdate.
+    keeping only the most recent version according to dateofmostrecentinformation.
 
     Args:
         icsr_generator: A generator yielding full nested dictionaries.
@@ -155,34 +155,43 @@ def transform_for_audit(
     Returns:
         A tuple containing the CSV buffer and the total row count.
     """
-    schema = ["safetyreportid", "receiptdate", "icsr_payload"]
+    # Align the schema with the corrected database schema
+    schema = ["safetyreportid", "date_of_most_recent_info", "receiptdate", "icsr_payload"]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=schema)
     writer.writeheader()
 
-    # De-duplication logic
+    # De-duplication logic using the correct version key
     latest_icsrs = {}
     for icsr_dict in icsr_generator:
+        # The structure from the parser is {'ichicsrMessage': {...}}
         safety_report = icsr_dict.get("ichicsrMessage", {}).get("safetyreport", {})
         if not safety_report:
             continue
 
         safetyreportid = safety_report.get("safetyreportid")
-        receiptdate = safety_report.get("receiptdate")
+        # Use the correct version key for comparison
+        version_date = safety_report.get("dateofmostrecentinformation")
 
-        if not safetyreportid or not receiptdate:
+        if not safetyreportid or not version_date:
             continue
 
-        if safetyreportid not in latest_icsrs or receiptdate > latest_icsrs[safetyreportid]['receiptdate']:
+        # Keep only the latest version of each report
+        if (
+            safetyreportid not in latest_icsrs
+            or version_date > latest_icsrs[safetyreportid]["version_date"]
+        ):
             latest_icsrs[safetyreportid] = {
-                "receiptdate": receiptdate,
-                "payload": safety_report
+                "version_date": version_date,
+                "receiptdate": safety_report.get("receiptdate"),
+                "payload": safety_report,
             }
 
     # Write de-duplicated records to buffer
     for safetyreportid, data in latest_icsrs.items():
         row = {
             "safetyreportid": safetyreportid,
+            "date_of_most_recent_info": data["version_date"],
             "receiptdate": data["receiptdate"],
             "icsr_payload": json.dumps(data["payload"]),
         }

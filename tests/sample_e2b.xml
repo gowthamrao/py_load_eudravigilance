@@ -21,6 +21,8 @@
       <receivedate>20240101</receivedate>
       <receiptdateformat>102</receiptdateformat>
       <receiptdate>20240101</receiptdate>
+      <dateofmostrecentinformationformat>102</dateofmostrecentinformationformat>
+      <dateofmostrecentinformation>20240101</dateofmostrecentinformation>
       <patient>
         <patientinitials>FN</patientinitials>
         <patientonsetage>55</patientonsetage>
@@ -86,6 +88,8 @@
       <receivedate>20240102</receivedate>
       <receiptdateformat>102</receiptdateformat>
       <receiptdate>20240102</receiptdate>
+      <dateofmostrecentinformationformat>102</dateofmostrecentinformationformat>
+      <dateofmostrecentinformation>20240102</dateofmostrecentinformation>
       <patient>
         <patientinitials>LW</patientinitials>
         <patientonsetage>78</patientonsetage>
@@ -114,6 +118,8 @@
       <receivedate>20240103</receivedate>
       <receiptdateformat>102</receiptdateformat>
       <receiptdate>20240103</receiptdate>
+      <dateofmostrecentinformationformat>102</dateofmostrecentinformationformat>
+      <dateofmostrecentinformation>20240103</dateofmostrecentinformation>
     </safetyreport>
   </ichicsrMessage>
   <ichicsrMessage>
@@ -137,6 +143,8 @@
       <receivedate>20240104</receivedate>
       <receiptdateformat>102</receiptdateformat>
       <receiptdate>20240104</receiptdate>
+      <dateofmostrecentinformationformat>102</dateofmostrecentinformationformat>
+      <dateofmostrecentinformation>20240104</dateofmostrecentinformation>
       <reportnullification>true</reportnullification>
     </safetyreport>
   </ichicsrMessage>
@@ -161,6 +169,8 @@
       <receivedate>20240105</receivedate>
       <receiptdateformat>102</receiptdateformat>
       <receiptdate>20240105</receiptdate>
+      <dateofmostrecentinformationformat>102</dateofmostrecentinformationformat>
+      <dateofmostrecentinformation>20240105</dateofmostrecentinformation>
       <patient>
         <patientinitials>AB</patientinitials>
         <patientonsetage>30</patientonsetage>

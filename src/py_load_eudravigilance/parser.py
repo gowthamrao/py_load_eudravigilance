@@ -102,6 +102,22 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
                 }
             )
 
+        # F.r: Results of Tests and Procedures
+        tests_list = []
+        for test_elem in report_elem.findall("hl7:test", namespaces=NAMESPACES):
+            tests_list.append(
+                {
+                    "testdate": _find_text(test_elem, "hl7:testdate"),
+                    "testname": _find_text(test_elem, "hl7:testname"),
+                    "testresult": _find_text(test_elem, "hl7:testresult"),
+                    "testresultunit": _find_text(test_elem, "hl7:testresultunit"),
+                    "testcomments": _find_text(test_elem, "hl7:testcomments"),
+                }
+            )
+
+        # H.1: Case Narrative
+        narrative = _find_text(report_elem, "hl7:narrativeincludeclinical")
+
         # Yield a dictionary representing the parsed ICSR with nested lists.
         if safety_report_id:
             yield {
@@ -112,9 +128,65 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
                 "patientsex": patient_sex,
                 "reactions": reactions_list,
                 "drugs": drugs_list,
+                "tests": tests_list,
+                "narrative": narrative,
             }
 
         # Crucial for memory efficiency: clear the element from memory.
+        elem.clear()
+        while elem.getprevious() is not None:
+            del elem.getparent()[0]
+
+    del context
+
+
+def _element_to_dict(elem) -> Dict[str, Any]:
+    """
+    Recursively converts an lxml Element to a dictionary.
+    Strips the namespace from the tag name for cleaner JSON.
+    """
+    # Remove namespace from tag
+    tag = etree.QName(elem.tag).localname
+
+    # Base case: if the element has no children, return its text
+    if not list(elem):
+        return {tag: elem.text}
+
+    # Recursive step: process children
+    children = {}
+    for child in elem:
+        child_dict = _element_to_dict(child)
+        child_tag = etree.QName(child.tag).localname
+        # If the tag already exists, turn it into a list
+        if child_tag in children:
+            if not isinstance(children[child_tag], list):
+                children[child_tag] = [children[child_tag]]
+            children[child_tag].append(child_dict[child_tag])
+        else:
+            children[child_tag] = child_dict[child_tag]
+
+    return {tag: children}
+
+
+def parse_icsr_xml_for_audit(
+    xml_source: IO[bytes],
+) -> Generator[Dict[str, Any], None, None]:
+    """
+    Parses an ICH E2B(R3) XML file and yields individual ICSRs as
+    a complete dictionary, suitable for JSON serialization.
+
+    This is used for the 'Full Representation' (Audit) schema load.
+    """
+    context = etree.iterparse(
+        xml_source, events=("end",), tag=f"{{{NAMESPACES['hl7']}}}ichicsrMessage"
+    )
+
+    for _, elem in context:
+        # Convert the entire element to a dictionary
+        icsr_dict = _element_to_dict(elem)
+        yield icsr_dict
+
+        # Memory cleanup
         elem.clear()
         while elem.getprevious() is not None:
             del elem.getparent()[0]

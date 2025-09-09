@@ -168,12 +168,53 @@ def process_files_parallel(
 import os
 
 
+def _process_normalized_file(
+    f, db_loader, file_path, file_hash, mode
+) -> Tuple[bool, str]:
+    """Helper to process a file for the 'normalized' schema."""
+    parsed_stream = parser.parse_icsr_xml(f)
+    buffers, counts, errors = transformer.transform_and_normalize(parsed_stream)
+
+    if errors:
+        logger.warning(
+            f"Encountered {len(errors)} parsing errors in {file_path}. See quarantine."
+        )
+        # Future enhancement: send errors to a quarantine queue/location
+
+    db_loader.load_normalized_data(
+        buffers=buffers,
+        row_counts=counts,
+        load_mode=mode,
+        file_path=file_path,
+        file_hash=file_hash,
+    )
+    total_rows = sum(counts.values())
+    return True, f"Loaded {total_rows} rows into normalized schema."
+
+
+def _process_audit_file(
+    f, db_loader, file_path, file_hash, mode
+) -> Tuple[bool, str]:
+    """Helper to process a file for the 'audit' schema."""
+    parsed_stream = parser.parse_icsr_xml_for_audit(f)
+    buffer, count = transformer.transform_for_audit(parsed_stream)
+    db_loader.load_audit_data(
+        buffer=buffer,
+        row_count=count,
+        load_mode=mode,
+        file_path=file_path,
+        file_hash=file_hash,
+    )
+    return True, f"Loaded {count} records into audit schema."
+
+
 def process_file(
     file_path: str, file_hash: str, settings: Settings, mode: str
 ) -> Tuple[bool, str]:
     """
     Processes a single file: opens, parses, transforms, and loads its data.
-    This function is designed to be run in a separate process.
+    This function is designed to be run in a separate process. It acts as a
+    dispatcher to schema-specific processing functions.
     """
     logger.info(f"Worker started for file: {file_path}")
     try:
@@ -182,40 +223,9 @@ def process_file(
 
         with fsspec.open(file_path, "rb") as f:
             if settings.schema_type == "normalized":
-                # E -> T -> L for Normalized Schema
-                parsed_stream = parser.parse_icsr_xml(f)
-                buffers, counts, errors = transformer.transform_and_normalize(
-                    parsed_stream
-                )
-
-                if errors:
-                    logger.warning(
-                        f"Encountered {len(errors)} parsing errors in {file_path}. See quarantine."
-                    )
-                    # Here you could add logic to send errors to a quarantine queue/location
-
-                db_loader.load_normalized_data(
-                    buffers=buffers,
-                    row_counts=counts,
-                    load_mode=mode,
-                    file_path=file_path,
-                    file_hash=file_hash,
-                )
-                total_rows = sum(counts.values())
-                return True, f"Loaded {total_rows} rows into normalized schema."
-
+                return _process_normalized_file(f, db_loader, file_path, file_hash, mode)
             elif settings.schema_type == "audit":
-                # E -> T -> L for Audit Schema
-                parsed_stream = parser.parse_icsr_xml_for_audit(f)
-                buffer, count = transformer.transform_for_audit(parsed_stream)
-                db_loader.load_audit_data(
-                    buffer=buffer,
-                    row_count=count,
-                    load_mode=mode,
-                    file_path=file_path,
-                    file_hash=file_hash,
-                )
-                return True, f"Loaded {count} records into audit schema."
+                return _process_audit_file(f, db_loader, file_path, file_hash, mode)
             else:
                 # This case should ideally be caught earlier, but serves as a safeguard
                 raise ValueError(
@@ -232,8 +242,8 @@ def process_file(
 
                 dest_path = os.path.join(settings.quarantine_uri, os.path.basename(file_path))
 
-                # Use the filesystem object's mv method. This is the correct pattern.
-                # It should handle creating the destination directory.
+                # Ensure the quarantine directory exists before moving the file.
+                fs.makedirs(settings.quarantine_uri, exist_ok=True)
                 fs.mv(file_path, dest_path)
                 logger.info(f"Moved failed file to quarantine: {dest_path}")
             except Exception as q_exc:

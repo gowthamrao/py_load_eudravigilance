@@ -133,3 +133,44 @@ def test_run_etl_no_files_to_process(mock_filter, mock_discover, mock_settings):
     with patch("py_load_eudravigilance.run.process_files_parallel") as mock_process_parallel:
         etl_run.run_etl(mock_settings, mode="delta")
         mock_process_parallel.assert_not_called()
+
+
+def test_process_file_quarantine_on_failure(mock_settings, tmp_path):
+    """
+    Tests that a file is moved to the quarantine directory if processing fails
+    and that the quarantine directory is created if it doesn't exist.
+    """
+    # 1. Setup temporary directories and files
+    source_dir = tmp_path / "source"
+    quarantine_dir = tmp_path / "quarantine"
+    source_dir.mkdir()
+    # Note: quarantine_dir is NOT created here to test the fix.
+
+    source_file = source_dir / "failed_file.xml"
+    source_file.write_text("<xml>fail</xml>")
+
+    # 2. Update settings to use the quarantine path
+    mock_settings.quarantine_uri = str(quarantine_dir)
+
+    # 3. Mock the loader and the internal processing function to raise an error
+    mock_loader_instance = MagicMock()
+    processing_error = ValueError("Simulated processing error")
+
+    with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader_instance), \
+         patch("py_load_eudravigilance.run._process_normalized_file", side_effect=processing_error):
+
+        # 4. Execute the function
+        success, message = etl_run.process_file(
+            str(source_file), "fail_hash", mock_settings, "delta"
+        )
+
+        # 5. Assertions
+        assert success is False
+        assert "Simulated processing error" in message
+
+        # Check that the file was moved
+        assert not source_file.exists()
+        assert quarantine_dir.exists()
+        quarantined_file = quarantine_dir / "failed_file.xml"
+        assert quarantined_file.exists()
+        assert quarantined_file.read_text() == "<xml>fail</xml>"

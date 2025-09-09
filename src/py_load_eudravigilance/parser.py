@@ -55,6 +55,12 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
         # C.1.5: Date of Most Recent Information (using receiptdate as a proxy)
         receipt_date = _find_text(report_elem, ".//hl7:receiptdate")
 
+        # C.1.11: Nullification
+        # The E2B(R3) guide specifies this field. We'll look for 'reportnullification'
+        # and treat a value of 'true' as a nullification instruction.
+        nullification_text = _find_text(report_elem, ".//hl7:reportnullification")
+        is_nullified = nullification_text and nullification_text.lower() == "true"
+
         # D: Patient Characteristics
         patient_elem = report_elem.find("hl7:patient", namespaces=NAMESPACES)
         patient_initials = None
@@ -123,6 +129,7 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
             yield {
                 "safetyreportid": safety_report_id,
                 "receiptdate": receipt_date,
+                "is_nullified": is_nullified,
                 "patientinitials": patient_initials,
                 "patientonsetage": patient_age,
                 "patientsex": patient_sex,
@@ -145,7 +152,10 @@ def _element_to_dict(elem) -> Dict[str, Any]:
     Recursively converts an lxml Element to a dictionary.
     Strips the namespace from the tag name for cleaner JSON.
     """
-    # Remove namespace from tag
+    # Ignore comments and other non-element nodes
+    if not isinstance(elem.tag, str):
+        return {}
+
     tag = etree.QName(elem.tag).localname
 
     # Base case: if the element has no children, return its text
@@ -156,7 +166,11 @@ def _element_to_dict(elem) -> Dict[str, Any]:
     children = {}
     for child in elem:
         child_dict = _element_to_dict(child)
-        child_tag = etree.QName(child.tag).localname
+        if not child_dict:  # Skip empty dicts from comments
+            continue
+
+        child_tag = next(iter(child_dict)) # Get the single key from the returned dict
+
         # If the tag already exists, turn it into a list
         if child_tag in children:
             if not isinstance(children[child_tag], list):

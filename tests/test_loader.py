@@ -28,12 +28,13 @@ def test_full_normalized_load(postgres_container, db_engine):
     """
     # 1. DDL for all normalized tables
     ddl_statements = [
-        """CREATE TABLE icsr_master (safetyreportid TEXT PRIMARY KEY, receiptdate TEXT);""",
-        """CREATE TABLE patient_characteristics (safetyreportid TEXT, patientinitials TEXT, patientonsetage TEXT, patientsex TEXT);""",
-        """CREATE TABLE reactions (safetyreportid TEXT, primarysourcereaction TEXT, reactionmeddrapt TEXT);""",
-        """CREATE TABLE drugs (safetyreportid TEXT, drugcharacterization TEXT, medicinalproduct TEXT, drugstructuredosagenumb TEXT, drugstructuredosageunit TEXT, drugdosagetext TEXT);""",
-        """CREATE TABLE tests_procedures (safetyreportid TEXT, testdate TEXT, testname TEXT, testresult TEXT, testresultunit TEXT, testcomments TEXT);""",
-        """CREATE TABLE case_summary_narrative (safetyreportid TEXT, narrative TEXT);"""
+        """DROP TABLE IF EXISTS icsr_master, patient_characteristics, reactions, drugs, tests_procedures, case_summary_narrative;""",
+        """CREATE TABLE icsr_master (safetyreportid TEXT PRIMARY KEY, receiptdate TEXT, is_nullified BOOLEAN DEFAULT FALSE);""",
+        """CREATE TABLE patient_characteristics (safetyreportid TEXT PRIMARY KEY, patientinitials TEXT, patientonsetage TEXT, patientsex TEXT);""",
+        """CREATE TABLE reactions (safetyreportid TEXT, reactionmeddrapt TEXT, primarysourcereaction TEXT, PRIMARY KEY (safetyreportid, reactionmeddrapt));""",
+        """CREATE TABLE drugs (safetyreportid TEXT, medicinalproduct TEXT, drugcharacterization TEXT, drugstructuredosagenumb TEXT, drugstructuredosageunit TEXT, drugdosagetext TEXT, PRIMARY KEY (safetyreportid, medicinalproduct));""",
+        """CREATE TABLE tests_procedures (safetyreportid TEXT, testname TEXT, testdate TEXT, testresult TEXT, testresultunit TEXT, testcomments TEXT, PRIMARY KEY (safetyreportid, testname));""",
+        """CREATE TABLE case_summary_narrative (safetyreportid TEXT PRIMARY KEY, narrative TEXT);"""
     ]
 
     # 2. Setup: Create tables
@@ -46,12 +47,17 @@ def test_full_normalized_load(postgres_container, db_engine):
     with open("tests/sample_e2b.xml", "rb") as f:
         xml_content = f.read()
 
-    file_buffer = io.BytesIO(xml_content)
+    # Use only the first 3 unique records for the full load test
+    initial_xml = xml_content.split(b'</ichicsrMessage>')[0] + b'</ichicsrMessage>\n' + \
+                  xml_content.split(b'</ichicsrMessage>')[1] + b'</ichicsrMessage>\n' + \
+                  xml_content.split(b'</ichicsrMessage>')[2] + b'</ichicsrMessage>\n</ichicsr>'
+
+    file_buffer = io.BytesIO(initial_xml)
     icsr_generator = parse_icsr_xml(file_buffer)
     buffers, row_counts = transform_and_normalize(icsr_generator)
 
     # 4. Load: Instantiate loader and run the load
-    loader = PostgresLoader(dsn=postgres_container.get_connection_url())
+    loader = PostgresLoader(db_engine)
     loader.create_metadata_tables() # This was the missing step
     # The load_normalized_data method handles the transaction itself
     loader.load_normalized_data(
@@ -87,7 +93,7 @@ def test_delta_audit_load(postgres_container, db_engine):
     End-to-end integration test for the 'audit' schema workflow.
     """
     # 1. Setup: Create metadata tables, which includes the audit log table
-    loader = PostgresLoader(dsn=postgres_container.get_connection_url())
+    loader = PostgresLoader(db_engine)
     loader.create_metadata_tables()
 
     # 2. E&T: Parse and transform the sample file for audit
@@ -109,9 +115,9 @@ def test_delta_audit_load(postgres_container, db_engine):
 
     # 4. Assert: Verify the data was loaded
     with db_engine.connect() as connection:
-        # The sample file contains 3 ICSRs
+        # After de-duplication, there should be 4 unique ICSRs
         audit_count = connection.execute(text("SELECT COUNT(*) FROM icsr_audit_log")).scalar_one()
-        assert audit_count == 3
+        assert audit_count == 4
 
         # Just check the first payload for validity
         payload = connection.execute(text("SELECT icsr_payload FROM icsr_audit_log WHERE safetyreportid = 'TEST-CASE-001'")).scalar_one()
@@ -119,3 +125,85 @@ def test_delta_audit_load(postgres_container, db_engine):
         assert "patient" in payload
         assert "test" in payload
         assert payload["test"]["testname"] == "Blood Pressure"
+
+
+def test_delta_load_with_nullification(postgres_container, db_engine):
+    """
+    Tests that a delta load correctly handles an ICSR nullification.
+    """
+    # 1. Setup: Same as the full load test
+    ddl_statements = [
+        """DROP TABLE IF EXISTS icsr_master;""",
+        """CREATE TABLE icsr_master (safetyreportid TEXT PRIMARY KEY, receiptdate TEXT, is_nullified BOOLEAN DEFAULT FALSE);""",
+    ]
+    with db_engine.connect() as connection:
+        for ddl in ddl_statements:
+            connection.execute(text(ddl))
+        connection.commit()
+
+    # 2. Initial Load: Load a file with 4 cases, including the one to be nullified.
+    loader = PostgresLoader(db_engine)
+    loader.create_metadata_tables()
+
+    with open("tests/sample_e2b.xml", "rb") as f:
+        xml_content = f.read()
+
+    # Create an initial version of the file without the nullification message
+    initial_xml = xml_content.split(b'</ichicsrMessage>')[0] + b'</ichicsrMessage>\n' + \
+                  xml_content.split(b'</ichicsrMessage>')[1] + b'</ichicsrMessage>\n' + \
+                  xml_content.split(b'</ichicsrMessage>')[2] + b'</ichicsrMessage>\n</ichicsr>'
+
+
+    file_buffer_initial = io.BytesIO(initial_xml)
+    icsr_generator_initial = parse_icsr_xml(file_buffer_initial)
+    buffers_initial, row_counts_initial = transform_and_normalize(icsr_generator_initial)
+
+    loader.load_normalized_data(
+        buffers=buffers_initial,
+        row_counts=row_counts_initial,
+        load_mode="full",
+        file_path="tests/initial.xml",
+        file_hash="initial_hash"
+    )
+
+    # 3. Assert initial state
+    with db_engine.connect() as connection:
+        case2_initial = connection.execute(text("SELECT * FROM icsr_master WHERE safetyreportid = 'TEST-CASE-002'")).first()
+        assert case2_initial.is_nullified is False
+        assert case2_initial.receiptdate == '20240102'
+
+    # 4. Delta Load: Create a new file with just the nullification message for TEST-CASE-002
+    nullification_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<ichicsr xmlns="urn:hl7-org:v3">
+  <ichicsrMessage>
+    <safetyreport>
+      <safetyreportversion>2</safetyreportversion>
+      <safetyreportid>TEST-CASE-002</safetyreportid>
+      <reporttype>4</reporttype>
+      <receiptdate>20240104</receiptdate>
+      <reportnullification>true</reportnullification>
+    </safetyreport>
+  </ichicsrMessage>
+</ichicsr>
+"""
+    file_buffer_delta = io.BytesIO(nullification_xml)
+    icsr_generator_delta = parse_icsr_xml(file_buffer_delta)
+    buffers_delta, row_counts_delta = transform_and_normalize(icsr_generator_delta)
+
+    loader.load_normalized_data(
+        buffers=buffers_delta,
+        row_counts=row_counts_delta,
+        load_mode="delta",
+        file_path="tests/delta.xml",
+        file_hash="delta_hash"
+    )
+
+    # 5. Assert final state
+    with db_engine.connect() as connection:
+        master_count = connection.execute(text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
+        assert master_count == 3 # Should not have added a new record
+
+        case2_final = connection.execute(text("SELECT * FROM icsr_master WHERE safetyreportid = 'TEST-CASE-002'")).first()
+        assert case2_final.is_nullified is True
+        # The receiptdate should NOT have been updated, as per our logic for nullification
+        assert case2_final.receiptdate == '20240102'

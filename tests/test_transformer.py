@@ -9,6 +9,7 @@ from py_load_eudravigilance.transformer import transform_and_normalize
 SAMPLE_ICSR_1 = {
     "safetyreportid": "TEST-CASE-001",
     "receiptdate": "20240101",
+    "is_nullified": False,
     "patientinitials": "FN",
     "patientonsetage": "55",
     "patientsex": "1",
@@ -31,6 +32,7 @@ SAMPLE_ICSR_1 = {
 SAMPLE_ICSR_2 = {
     "safetyreportid": "TEST-CASE-002",
     "receiptdate": "20240102",
+    "is_nullified": True,
     "patientinitials": "LW",
     "patientonsetage": "78",
     "patientsex": "2",
@@ -64,6 +66,8 @@ def test_transform_and_normalize():
         "patient_characteristics",
         "reactions",
         "drugs",
+        "tests_procedures",
+        "case_summary_narrative",
     ]
     assert set(buffers.keys()) == set(expected_tables)
     assert set(row_counts.keys()) == set(expected_tables)
@@ -73,13 +77,15 @@ def test_transform_and_normalize():
     assert row_counts["patient_characteristics"] == 2
     assert row_counts["reactions"] == 3  # 2 from first case, 1 from second
     assert row_counts["drugs"] == 1
+    assert row_counts["tests_procedures"] == 0 # No tests in sample data
+    assert row_counts["case_summary_narrative"] == 0 # No narrative in sample
 
     # 3. Check the content of each buffer
     # Icsr_master table
     master_content = buffers["icsr_master"].read()
-    assert "safetyreportid,receiptdate" in master_content
-    assert "TEST-CASE-001,20240101" in master_content
-    assert "TEST-CASE-002,20240102" in master_content
+    assert "safetyreportid,receiptdate,is_nullified" in master_content
+    assert "TEST-CASE-001,20240101,False" in master_content
+    assert "TEST-CASE-002,20240102,True" in master_content
 
     # Reactions table
     reactions_content = buffers["reactions"].read()

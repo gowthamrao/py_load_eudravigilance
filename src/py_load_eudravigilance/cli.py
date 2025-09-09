@@ -7,11 +7,14 @@ processes, managing the database, and validating files.
 
 import hashlib
 import io
+import os
+import concurrent.futures
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import fsspec
 import typer
+import sqlalchemy
 from typing_extensions import Annotated
 
 from .config import load_config, CONFIG_FILE_NAME
@@ -23,6 +26,64 @@ from .transformer import transform_and_normalize, transform_for_audit
 app = typer.Typer(
     help="A high-performance ETL tool for EudraVigilance ICSR XML files."
 )
+
+
+def process_single_file(
+    file_content: bytes,
+    file_path: str,
+    db_dsn: str,
+    schema_type: str,
+    mode: str,
+) -> Tuple[str, str]:
+    """
+    Processes a single XML file content.
+
+    This function is designed to be called by a ProcessPoolExecutor. It
+    initializes its own database loader to ensure process safety.
+    """
+    try:
+        file_hash = hashlib.sha256(file_content).hexdigest()
+        # Each worker creates its own engine and loader
+        engine = sqlalchemy.create_engine(db_dsn)
+        loader = PostgresLoader(engine)
+
+        file_buffer = io.BytesIO(file_content)
+
+        if schema_type == "normalized":
+            icsr_generator = parse_icsr_xml(file_buffer)
+            buffers, row_counts = transform_and_normalize(icsr_generator)
+            if not row_counts.get("icsr_master"):
+                loader._log_file_status(file_path, file_hash, "completed", 0)
+                loader.manage_transaction("COMMIT")
+                return file_path, "skipped_no_icsr"
+            loader.load_normalized_data(
+                buffers=buffers,
+                row_counts=row_counts,
+                load_mode=mode,
+                file_path=file_path,
+                file_hash=file_hash,
+            )
+        elif schema_type == "audit":
+            icsr_generator = parse_icsr_xml_for_audit(file_buffer)
+            buffer, row_count = transform_for_audit(icsr_generator)
+            if row_count == 0:
+                loader._log_file_status(file_path, file_hash, "completed_audit", 0)
+                loader.manage_transaction("COMMIT")
+                return file_path, "skipped_no_icsr"
+            loader.load_audit_data(
+                buffer=buffer,
+                row_count=row_count,
+                load_mode=mode,
+                file_path=file_path,
+                file_hash=file_hash,
+            )
+        return file_path, "success"
+    except Exception as e:
+        print(f"Error processing file {file_path} in worker: {e}")
+        return file_path, "failure"
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
 
 
 @app.command()
@@ -40,6 +101,12 @@ def run(
             help="Load mode: 'delta' for incremental upserts or 'full' for a full refresh."
         ),
     ] = "delta",
+    workers: Annotated[
+        int,
+        typer.Option(
+            help="Number of parallel worker processes to use."
+        ),
+    ] = os.cpu_count() or 1,
     config_file: Annotated[
         Path,
         typer.Option(
@@ -55,138 +122,100 @@ def run(
     ] = f"./{CONFIG_FILE_NAME}",
 ):
     """
-    Run the full ETL pipeline: Parse, Transform, and Load XML files from a source URI.
+    Run the full ETL pipeline in parallel: Parse, Transform, and Load XML files.
     """
-    # 1. Load Configuration
+    # 1. Load Configuration and create main engine
     try:
         settings = load_config(path=str(config_file))
+        engine = sqlalchemy.create_engine(settings.database.dsn)
     except (ValueError, FileNotFoundError) as e:
         typer.secho(f"Configuration Error: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    # Determine the source URI (CLI argument takes precedence)
     final_source_uri = source_uri or settings.source_uri
     if not final_source_uri:
-        typer.secho(
-            "Error: A source URI must be provided either as an argument or in the config file.",
-            fg=typer.colors.RED,
-        )
+        typer.secho("Error: A source URI must be provided.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    typer.echo(f"Starting ETL process (mode: {mode})")
+    typer.echo(f"Starting ETL process (mode: {mode}, workers: {workers})")
     typer.echo(f"Source: {final_source_uri}")
 
-    # 2. Use fsspec to open all files matching the URI
+    # 2. Use fsspec to find files
     try:
         input_files = fsspec.open_files(final_source_uri, mode="rb")
         if not input_files:
-            typer.secho("No files found at the specified source URI.", fg=typer.colors.YELLOW)
+            typer.secho("No files found at the specified URI.", fg=typer.colors.YELLOW)
             raise typer.Exit()
     except Exception as e:
         typer.secho(f"Error accessing source files: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
+    files_to_process = []
+    if mode == "delta":
+        typer.echo("Fetching history of completed files...")
+        main_loader = PostgresLoader(engine)
+        completed_hashes = main_loader.get_completed_file_hashes()
+        typer.echo(f"Found {len(completed_hashes)} previously processed files to skip.")
+        for file in input_files:
+            with file as f:
+                content = f.read()
+                file_hash = hashlib.sha256(content).hexdigest()
+                if file_hash not in completed_hashes:
+                    files_to_process.append((content, file.path))
+                else:
+                    typer.secho(f"Skipping already processed file: {file.path}", fg=typer.colors.YELLOW)
+    else: # full mode
+        for file in input_files:
+             with file as f:
+                content = f.read()
+                files_to_process.append((content, file.path))
 
-    # 3. Initialize the Loader
-    loader = PostgresLoader(dsn=settings.database.dsn)
-    loader.connect()
+    if not files_to_process:
+        typer.secho("No new files to process.", fg=typer.colors.GREEN)
+        raise typer.Exit()
+
+    typer.echo(f"Found {len(files_to_process)} files to process.")
 
     files_processed = 0
     files_failed = 0
 
-    try:
-        # 4. Get completed file hashes if in delta mode
-        completed_hashes = set()
-        if mode == "delta":
-            typer.echo("Fetching history of completed files...")
-            completed_hashes = loader.get_completed_file_hashes()
-            typer.echo(f"Found {len(completed_hashes)} previously processed files.")
+    with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as executor:
+        future_to_path = {
+            executor.submit(
+                process_single_file,
+                content,
+                path,
+                settings.database.dsn,
+                settings.schema_type,
+                mode,
+            ): path
+            for content, path in files_to_process
+        }
 
-        # 5. Loop through each file and process it
-        for file in input_files:
-            file_content: bytes | None = None
-            file_hash: str | None = None
-            file_path = file.path
-
+        for future in concurrent.futures.as_completed(future_to_path):
+            path = future_to_path[future]
             try:
-                with file as f:
-                    typer.echo(f"\n--- Processing file: {file_path} ---")
-                    file_content = f.read()
-                    file_hash = hashlib.sha256(file_content).hexdigest()
-
-                if file_hash in completed_hashes:
-                    typer.secho(f"Skipping already processed file: {file_path}", fg=typer.colors.YELLOW)
-                    continue
-
-                file_buffer = io.BytesIO(file_content)
-
-                if settings.schema_type == "normalized":
-                    typer.echo("Running 'normalized' schema workflow...")
-                    # E&T: Parse and normalize the data into multiple buffers
-                    typer.echo("Parsing and normalizing XML data...")
-                    icsr_generator = parse_icsr_xml(file_buffer)
-                    buffers, row_counts = transform_and_normalize(icsr_generator)
-
-                    # If there are no master records, we can skip the file
-                    if not row_counts.get("icsr_master"):
-                        typer.echo("No ICSR messages found in file. Skipping.")
-                        # Log as completed with 0 rows, in its own transaction
-                        loader._log_file_status(file_path, file_hash, "completed", 0)
-                        loader.manage_transaction("COMMIT")
-                        continue
-
-                    # L: Load the normalized data. The loader handles the transaction.
-                    loader.load_normalized_data(
-                        buffers=buffers,
-                        row_counts=row_counts,
-                        load_mode=mode,
-                        file_path=file_path,
-                        file_hash=file_hash,
-                    )
-
-                elif settings.schema_type == "audit":
-                    typer.echo("Running 'audit' schema workflow...")
-                    # E&T: Parse and transform the data for the audit log
-                    typer.echo("Parsing and transforming XML for audit...")
-                    icsr_generator = parse_icsr_xml_for_audit(file_buffer)
-                    buffer, row_count = transform_for_audit(icsr_generator)
-
-                    if row_count == 0:
-                        typer.echo("No ICSR messages found in file. Skipping.")
-                        loader._log_file_status(file_path, file_hash, "completed_audit", 0)
-                        loader.manage_transaction("COMMIT")
-                        continue
-
-                    # L: Load the audit data.
-                    loader.load_audit_data(
-                        buffer=buffer,
-                        row_count=row_count,
-                        load_mode=mode,
-                        file_path=file_path,
-                        file_hash=file_hash,
-                    )
-
-                files_processed += 1
-                typer.secho(f"Successfully processed file: {file_path}", fg=typer.colors.GREEN)
-
-            except Exception as e:
-                # The loader handles its own rollback and failure logging.
-                # The CLI just needs to report the failure and continue.
-                typer.secho(f"Failed to process file {file_path}: {e}", fg=typer.colors.RED)
+                _, status = future.result()
+                if status == "success":
+                    files_processed += 1
+                    typer.secho(f"Successfully processed file: {path}", fg=typer.colors.GREEN)
+                elif status == "failure":
+                    files_failed += 1
+                    typer.secho(f"Failed to process file: {path}", fg=typer.colors.RED)
+                else: # Skipped
+                    typer.secho(f"Skipped file (no data or already processed in worker): {path}", fg=typer.colors.YELLOW)
+            except Exception as exc:
                 files_failed += 1
+                typer.secho(f"File {path} generated an exception: {exc}", fg=typer.colors.RED)
 
-        typer.secho(
-            f"\nETL process finished. {files_processed} files processed successfully, {files_failed} failed.",
-            fg=typer.colors.GREEN if files_failed == 0 else typer.colors.YELLOW,
-        )
-        if files_failed > 0:
-            raise typer.Exit(code=1)
+    typer.secho(
+        f"\nETL process finished. {files_processed} files processed successfully, {files_failed} failed.",
+        fg=typer.colors.GREEN if files_failed == 0 else typer.colors.YELLOW,
+    )
+    if files_failed > 0:
+        raise typer.Exit(code=1)
 
-    finally:
-        # Ensure the database connection is closed
-        if loader.conn and not loader.conn.closed:
-            loader.conn.close()
-            typer.echo("Database connection closed.")
+    engine.dispose()
 
 
 @app.command()
@@ -211,12 +240,16 @@ def init_db(
     typer.echo("Initializing database...")
     try:
         settings = load_config(path=str(config_file))
-        loader = PostgresLoader(dsn=settings.database.dsn)
+        engine = sqlalchemy.create_engine(settings.database.dsn)
+        loader = PostgresLoader(engine)
         loader.create_metadata_tables()
         typer.secho("Database initialization complete.", fg=typer.colors.GREEN)
     except Exception as e:
         typer.secho(f"Database initialization failed: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
+    finally:
+        if 'engine' in locals():
+            engine.dispose()
 
 
 if __name__ == "__main__":

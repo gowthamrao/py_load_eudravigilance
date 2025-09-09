@@ -33,7 +33,7 @@ def transform_and_normalize(
     """
     # Define the schemas for our target tables
     schemas = {
-        "icsr_master": ["safetyreportid", "receiptdate"],
+        "icsr_master": ["safetyreportid", "receiptdate", "is_nullified"],
         "patient_characteristics": [
             "safetyreportid",
             "patientinitials",
@@ -80,6 +80,9 @@ def transform_and_normalize(
 
         # 1. Populate the master and patient tables (one-to-one)
         master_row = {k: icsr_dict.get(k) for k in schemas["icsr_master"]}
+        # Explicitly convert boolean to string for CSV writer, handling None
+        is_nullified_val = master_row.get("is_nullified")
+        master_row["is_nullified"] = str(is_nullified_val if is_nullified_val is not None else False)
         writers["icsr_master"].writerow(master_row)
         row_counts["icsr_master"] += 1
 
@@ -125,28 +128,25 @@ def transform_for_audit(
 ) -> Tuple[io.StringIO, int]:
     """
     Transforms a generator of full ICSR dictionaries into an in-memory CSV
-    buffer containing the data for the audit log table.
+    buffer for the audit log table.
 
-    Each row contains the safety report ID, the version (receipt date), and
-    the full ICSR payload as a JSON string.
+    This function de-duplicates ICSRs from the source based on safetyreportid,
+    keeping only the most recent version according to receiptdate.
 
     Args:
-        icsr_generator: A generator yielding full nested dictionaries from
-                        the audit parser.
+        icsr_generator: A generator yielding full nested dictionaries.
 
     Returns:
-        A tuple containing:
-        - An `io.StringIO` CSV buffer for the `icsr_audit_log` table.
-        - The total row count for the buffer.
+        A tuple containing the CSV buffer and the total row count.
     """
     schema = ["safetyreportid", "receiptdate", "icsr_payload"]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=schema)
     writer.writeheader()
-    row_count = 0
 
+    # De-duplication logic
+    latest_icsrs = {}
     for icsr_dict in icsr_generator:
-        # The dictionary is nested, e.g., {'ichicsrMessage': {'safetyreport': ...}}
         safety_report = icsr_dict.get("ichicsrMessage", {}).get("safetyreport", {})
         if not safety_report:
             continue
@@ -154,16 +154,24 @@ def transform_for_audit(
         safetyreportid = safety_report.get("safetyreportid")
         receiptdate = safety_report.get("receiptdate")
 
-        if not safetyreportid:
+        if not safetyreportid or not receiptdate:
             continue
 
+        if safetyreportid not in latest_icsrs or receiptdate > latest_icsrs[safetyreportid]['receiptdate']:
+            latest_icsrs[safetyreportid] = {
+                "receiptdate": receiptdate,
+                "payload": safety_report
+            }
+
+    # Write de-duplicated records to buffer
+    for safetyreportid, data in latest_icsrs.items():
         row = {
             "safetyreportid": safetyreportid,
-            "receiptdate": receiptdate,
-            "icsr_payload": json.dumps(safety_report),
+            "receiptdate": data["receiptdate"],
+            "icsr_payload": json.dumps(data["payload"]),
         }
         writer.writerow(row)
-        row_count += 1
 
+    row_count = len(latest_icsrs)
     buffer.seek(0)
     return buffer, row_count

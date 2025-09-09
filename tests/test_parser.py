@@ -39,13 +39,24 @@ def test_parse_icsr_xml_with_nested_data():
     assert case1["reactions"][0]["reactionmeddrapt"] == "Nausea"
     assert case1["reactions"][1]["reactionmeddrapt"] == "Headache"
 
-    # Assert drugs (one-to-many)
+    # Assert drugs (one-to-many) and nested substances
     assert "drugs" in case1
     assert len(case1["drugs"]) == 2
-    assert case1["drugs"][0]["medicinalproduct"] == "DrugA"
-    assert case1["drugs"][0]["drugcharacterization"] == "1"
-    assert case1["drugs"][1]["medicinalproduct"] == "DrugB"
-    assert case1["drugs"][1]["drugcharacterization"] == "2"
+    drug1 = case1["drugs"][0]
+    drug2 = case1["drugs"][1]
+
+    assert drug1["medicinalproduct"] == "DrugA"
+    assert drug1["drugcharacterization"] == "1"
+    assert "substances" in drug1
+    assert len(drug1["substances"]) == 1
+    assert drug1["substances"][0]["activesubstancename"] == "SubstanceX"
+
+    assert drug2["medicinalproduct"] == "DrugB"
+    assert drug2["drugcharacterization"] == "2"
+    assert "substances" in drug2
+    assert len(drug2["substances"]) == 2
+    assert drug2["substances"][0]["activesubstancename"] == "SubstanceY"
+    assert drug2["substances"][1]["activesubstancename"] == "SubstanceZ"
 
     # 3. Assert the content of the second ICSR (no nested data) is correct.
     case2 = parsed_icsrs[1]

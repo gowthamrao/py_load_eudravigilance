@@ -18,6 +18,31 @@ def db_engine(postgres_container):
     yield engine
     engine.dispose()
 
+def test_create_all_tables(db_engine):
+    """
+    Tests the `create_all_tables` method of the PostgresLoader.
+    It verifies that all tables defined in the schema are created in the DB.
+    """
+    loader = PostgresLoader(db_engine.url.render_as_string(hide_password=False))
+    loader.create_all_tables()
+
+    inspector = sqlalchemy.inspect(db_engine)
+    tables = inspector.get_table_names()
+
+    expected_tables = {
+        "icsr_master",
+        "patient_characteristics",
+        "reactions",
+        "drugs",
+        "drug_substances",
+        "tests_procedures",
+        "case_summary_narrative",
+        "icsr_audit_log",
+        "etl_file_history",
+    }
+
+    assert expected_tables.issubset(set(tables))
+
 from py_load_eudravigilance.parser import parse_icsr_xml
 from py_load_eudravigilance.transformer import transform_and_normalize
 import io
@@ -26,22 +51,9 @@ def test_full_normalized_load(postgres_container, db_engine):
     """
     End-to-end integration test for the 'normalized' schema workflow.
     """
-    # 1. DDL for all normalized tables
-    ddl_statements = [
-        """DROP TABLE IF EXISTS icsr_master, patient_characteristics, reactions, drugs, tests_procedures, case_summary_narrative;""",
-        """CREATE TABLE icsr_master (safetyreportid TEXT PRIMARY KEY, receiptdate TEXT, is_nullified BOOLEAN DEFAULT FALSE);""",
-        """CREATE TABLE patient_characteristics (safetyreportid TEXT PRIMARY KEY, patientinitials TEXT, patientonsetage TEXT, patientsex TEXT);""",
-        """CREATE TABLE reactions (safetyreportid TEXT, reactionmeddrapt TEXT, primarysourcereaction TEXT, PRIMARY KEY (safetyreportid, reactionmeddrapt));""",
-        """CREATE TABLE drugs (safetyreportid TEXT, medicinalproduct TEXT, drugcharacterization TEXT, drugstructuredosagenumb TEXT, drugstructuredosageunit TEXT, drugdosagetext TEXT, PRIMARY KEY (safetyreportid, medicinalproduct));""",
-        """CREATE TABLE tests_procedures (safetyreportid TEXT, testname TEXT, testdate TEXT, testresult TEXT, testresultunit TEXT, testcomments TEXT, PRIMARY KEY (safetyreportid, testname));""",
-        """CREATE TABLE case_summary_narrative (safetyreportid TEXT PRIMARY KEY, narrative TEXT);"""
-    ]
-
-    # 2. Setup: Create tables
-    with db_engine.connect() as connection:
-        for ddl in ddl_statements:
-            connection.execute(text(ddl))
-        connection.commit()
+    # 1. Setup: Create all tables using the loader
+    loader = PostgresLoader(db_engine.url.render_as_string(hide_password=False))
+    loader.create_all_tables()
 
     # 3. E&T: Parse and transform the sample file
     with open("tests/sample_e2b.xml", "rb") as f:
@@ -56,10 +68,7 @@ def test_full_normalized_load(postgres_container, db_engine):
     icsr_generator = parse_icsr_xml(file_buffer)
     buffers, row_counts = transform_and_normalize(icsr_generator)
 
-    # 4. Load: Instantiate loader and run the load
-    loader = PostgresLoader(db_engine)
-    loader.create_metadata_tables() # This was the missing step
-    # The load_normalized_data method handles the transaction itself
+    # 4. Load: The load_normalized_data method handles the transaction itself
     loader.load_normalized_data(
         buffers=buffers,
         row_counts=row_counts,
@@ -73,15 +82,27 @@ def test_full_normalized_load(postgres_container, db_engine):
         # The sample file contains 3 ICSRs
         master_count = connection.execute(text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
         assert master_count == 3
-        # Only the first ICSR has drugs
+        # The first ICSR has 2 drugs
         drug_count = connection.execute(text("SELECT COUNT(*) FROM drugs")).scalar_one()
         assert drug_count == 2
+        # The two drugs have a total of 3 substances
+        substance_count = connection.execute(text("SELECT COUNT(*) FROM drug_substances")).scalar_one()
+        assert substance_count == 3
         # Only the first ICSR has a test
         test_count = connection.execute(text("SELECT COUNT(*) FROM tests_procedures")).scalar_one()
         assert test_count == 1
         # Only the first ICSR has a narrative
         narrative_count = connection.execute(text("SELECT COUNT(*) FROM case_summary_narrative")).scalar_one()
         assert narrative_count == 1
+
+        # Verify the content of drug_substances
+        substances = connection.execute(text("SELECT * FROM drug_substances ORDER BY activesubstancename")).fetchall()
+        assert substances[0].activesubstancename == "SubstanceX"
+        assert substances[0].drug_seq == 1
+        assert substances[1].activesubstancename == "SubstanceY"
+        assert substances[1].drug_seq == 2
+        assert substances[2].activesubstancename == "SubstanceZ"
+        assert substances[2].drug_seq == 2
 
 
 from py_load_eudravigilance.parser import parse_icsr_xml_for_audit
@@ -92,9 +113,9 @@ def test_delta_audit_load(postgres_container, db_engine):
     """
     End-to-end integration test for the 'audit' schema workflow.
     """
-    # 1. Setup: Create metadata tables, which includes the audit log table
-    loader = PostgresLoader(db_engine)
-    loader.create_metadata_tables()
+    # 1. Setup: Create all tables using the loader
+    loader = PostgresLoader(db_engine.url.render_as_string(hide_password=False))
+    loader.create_all_tables()
 
     # 2. E&T: Parse and transform the sample file for audit
     with open("tests/sample_e2b.xml", "rb") as f:
@@ -131,19 +152,11 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
     """
     Tests that a delta load correctly handles an ICSR nullification.
     """
-    # 1. Setup: Same as the full load test
-    ddl_statements = [
-        """DROP TABLE IF EXISTS icsr_master;""",
-        """CREATE TABLE icsr_master (safetyreportid TEXT PRIMARY KEY, receiptdate TEXT, is_nullified BOOLEAN DEFAULT FALSE);""",
-    ]
-    with db_engine.connect() as connection:
-        for ddl in ddl_statements:
-            connection.execute(text(ddl))
-        connection.commit()
+    # 1. Setup: Create all tables using the loader
+    loader = PostgresLoader(db_engine.url.render_as_string(hide_password=False))
+    loader.create_all_tables()
 
     # 2. Initial Load: Load a file with 4 cases, including the one to be nullified.
-    loader = PostgresLoader(db_engine)
-    loader.create_metadata_tables()
 
     with open("tests/sample_e2b.xml", "rb") as f:
         xml_content = f.read()

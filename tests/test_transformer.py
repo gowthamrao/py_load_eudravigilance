@@ -24,7 +24,17 @@ SAMPLE_ICSR_1 = {
             "drugstructuredosagenumb": "10",
             "drugstructuredosageunit": "032",
             "drugdosagetext": "10 mg",
-        }
+            "substances": [{"activesubstancename": "SubstanceX"}],
+        },
+        {
+            "drugcharacterization": "2",
+            "medicinalproduct": "DrugB",
+            "drugdosagetext": "50 mg",
+            "substances": [
+                {"activesubstancename": "SubstanceY"},
+                {"activesubstancename": "SubstanceZ"},
+            ],
+        },
     ],
 }
 
@@ -66,6 +76,7 @@ def test_transform_and_normalize():
         "patient_characteristics",
         "reactions",
         "drugs",
+        "drug_substances",
         "tests_procedures",
         "case_summary_narrative",
     ]
@@ -76,7 +87,8 @@ def test_transform_and_normalize():
     assert row_counts["icsr_master"] == 2
     assert row_counts["patient_characteristics"] == 2
     assert row_counts["reactions"] == 3  # 2 from first case, 1 from second
-    assert row_counts["drugs"] == 1
+    assert row_counts["drugs"] == 2 # Now two drugs in the first case
+    assert row_counts["drug_substances"] == 3 # 1 for DrugA, 2 for DrugB
     assert row_counts["tests_procedures"] == 0 # No tests in sample data
     assert row_counts["case_summary_narrative"] == 0 # No narrative in sample
 
@@ -97,9 +109,17 @@ def test_transform_and_normalize():
     # Drugs table
     drugs_content = buffers["drugs"].read()
     assert (
-        "safetyreportid,drugcharacterization,medicinalproduct,drugstructuredosagenumb,drugstructuredosageunit,drugdosagetext"
+        "safetyreportid,drug_seq,drugcharacterization,medicinalproduct,drugstructuredosagenumb,drugstructuredosageunit,drugdosagetext"
         in drugs_content
     )
-    assert "TEST-CASE-001,1,DrugA,10,032,10 mg" in drugs_content
+    assert "TEST-CASE-001,1,1,DrugA,10,032,10 mg" in drugs_content
+    assert "TEST-CASE-001,2,2,DrugB,,," in drugs_content
     # Ensure no rows from the second case are present
     assert "TEST-CASE-002" not in drugs_content
+
+    # Drug Substances table
+    substances_content = buffers["drug_substances"].read()
+    assert "safetyreportid,drug_seq,activesubstancename" in substances_content
+    assert "TEST-CASE-001,1,SubstanceX" in substances_content
+    assert "TEST-CASE-001,2,SubstanceY" in substances_content
+    assert "TEST-CASE-001,2,SubstanceZ" in substances_content

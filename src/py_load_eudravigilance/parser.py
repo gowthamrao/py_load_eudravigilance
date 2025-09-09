@@ -92,6 +92,13 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
         # G.k: Drug(s)
         drugs_list = []
         for drug_elem in report_elem.findall("hl7:drug", namespaces=NAMESPACES):
+            # G.k.2.2: Active Substance Name
+            substances_list = []
+            for substance_elem in drug_elem.findall("hl7:activesubstance", namespaces=NAMESPACES):
+                substances_list.append({
+                    "activesubstancename": _find_text(substance_elem, "hl7:activesubstancename")
+                })
+
             drugs_list.append(
                 {
                     "drugcharacterization": _find_text(
@@ -105,6 +112,7 @@ def parse_icsr_xml(xml_source: IO[bytes]) -> Generator[Dict[str, Any], None, Non
                         drug_elem, "hl7:drugstructuredosageunit"
                     ),
                     "drugdosagetext": _find_text(drug_elem, "hl7:drugdosagetext"),
+                    "substances": substances_list,
                 }
             )
 

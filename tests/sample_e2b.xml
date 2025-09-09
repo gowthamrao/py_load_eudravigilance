@@ -40,11 +40,20 @@
         <drugstructuredosagenumb>10</drugstructuredosagenumb>
         <drugstructuredosageunit>032</drugstructuredosageunit>
         <drugdosagetext>10 mg</drugdosagetext>
+        <activesubstance>
+          <activesubstancename>SubstanceX</activesubstancename>
+        </activesubstance>
       </drug>
       <drug>
         <drugcharacterization>2</drugcharacterization>
         <medicinalproduct>DrugB</medicinalproduct>
         <drugdosagetext>50 mg</drugdosagetext>
+        <activesubstance>
+          <activesubstancename>SubstanceY</activesubstancename>
+        </activesubstance>
+        <activesubstance>
+          <activesubstancename>SubstanceZ</activesubstancename>
+        </activesubstance>
       </drug>
       <test>
         <testdate>20240101</testdate>

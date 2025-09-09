@@ -10,9 +10,12 @@ import sqlalchemy
 from abc import ABC, abstractmethod
 from io import IOBase
 from typing import Any, Dict, List
+
 from psycopg2.extensions import connection as PgConnection
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.engine.url import make_url
+
+from .schema import metadata
 
 
 # Using Any for Connection to avoid a premature driver import in the interface.
@@ -81,10 +84,10 @@ class LoaderInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def create_metadata_tables(self) -> None:
+    def create_all_tables(self) -> None:
         """
-        Creates the necessary metadata tables (e.g., for file history)
-        in the target database if they don't already exist.
+        Creates all necessary tables (data, metadata, audit) in the
+        target database if they don't already exist.
         """
         raise NotImplementedError
 
@@ -97,41 +100,51 @@ class PostgresLoader(LoaderInterface):
     leverages the high-performance `COPY FROM STDIN` command for bulk loading.
     """
 
-    def __init__(self, dsn: str):
+    def __init__(self, dsn_or_engine: Any):
         """
         Initializes the PostgresLoader with database connection details.
 
         Args:
-            dsn: A SQLAlchemy-compatible database connection string or a
-                 psycopg2-style DSN string.
+            dsn_or_engine: A SQLAlchemy-compatible database connection string,
+                           a psycopg2-style DSN string, or a pre-existing
+                           SQLAlchemy Engine instance.
         """
         self.conn: PgConnection | None = None
         self.staging_table_name: str | None = None
 
-        try:
-            # Create the SQLAlchemy engine directly from the DSN
-            self.engine = sqlalchemy.create_engine(dsn)
-
-            # For psycopg2, we need to convert the URL to a DSN string
-            url = make_url(dsn)
+        if isinstance(dsn_or_engine, sqlalchemy.engine.Engine):
+            self.engine = dsn_or_engine
+            # Recreate the psycopg2 DSN from the engine's URL
+            url = self.engine.url
             self.psycopg2_dsn = (
                 f"dbname='{url.database}' user='{url.username}' "
                 f"password='{url.password}' host='{url.host}' port='{url.port}'"
             )
+        else: # It's a DSN string
+            dsn = str(dsn_or_engine)
+            try:
+                # Create the SQLAlchemy engine directly from the DSN
+                self.engine = sqlalchemy.create_engine(dsn)
+                # For psycopg2, we need to convert the URL to a DSN string
+                url = make_url(dsn)
+                self.psycopg2_dsn = (
+                    f"dbname='{url.database}' user='{url.username}' "
+                    f"password='{url.password}' host='{url.host}' port='{url.port}'"
+                )
 
-        except Exception as e:
-            # Handle cases where the DSN might be in the simple format psycopg2
-            # expects but SQLAlchemy does not.
-            print(f"Could not parse DSN for SQLAlchemy, falling back. Error: {e}")
-            self.psycopg2_dsn = dsn
-            connect_args = {
-                item.split("=")[0]: item.split("=")[1]
-                for item in dsn.split()
-                if "=" in item
-            }
-            self.engine = sqlalchemy.create_engine(
-                "postgresql+psycopg2://", connect_args=connect_args
-            )
+            except Exception as e:
+                # Handle cases where the DSN might be in the simple format psycopg2
+                # expects but SQLAlchemy does not.
+                print(f"Could not parse DSN for SQLAlchemy, falling back. Error: {e}")
+                self.psycopg2_dsn = dsn
+                connect_args = {
+                    item.split("=")[0]: item.split("=")[1]
+                    for item in dsn.split()
+                    if "=" in item
+                }
+                self.engine = sqlalchemy.create_engine(
+                    "postgresql+psycopg2://", connect_args=connect_args
+                )
 
 
     def connect(self) -> PgConnection:
@@ -157,7 +170,8 @@ class PostgresLoader(LoaderInterface):
 
         if load_mode == "full":
             with self.conn.cursor() as cursor:
-                cursor.execute(f"TRUNCATE TABLE {target_table};")
+                # Use CASCADE to handle foreign key constraints automatically.
+                cursor.execute(f"TRUNCATE TABLE {target_table} CASCADE;")
                 print(f"Table '{target_table}' truncated for full load.")
             # A full load truncate should be committed immediately.
             self.conn.commit()
@@ -215,27 +229,43 @@ class PostgresLoader(LoaderInterface):
         if self.conn is None or self.conn.closed:
             self.connect()
 
-        # Introspect the target table to get all column names
         inspector = sqlalchemy.inspect(self.engine)
         all_columns = [col["name"] for col in inspector.get_columns(target_table)]
         update_cols = [col for col in all_columns if col not in primary_keys]
-
-        # Construct the parts of the raw SQL query
         pk_string = ", ".join(primary_keys)
-        update_statements = ", ".join([f"{col} = EXCLUDED.{col}" for col in update_cols])
 
-        sql = f"""
-            INSERT INTO {target_table}
-            SELECT * FROM {staging_table}
-            ON CONFLICT ({pk_string}) DO UPDATE
-            SET {update_statements}
-        """
-
-        # Add the version-checking WHERE clause if a version_key is provided
-        if version_key:
-            sql += f" WHERE {target_table}.{version_key} < EXCLUDED.{version_key};"
+        if not update_cols:
+            sql = f"""
+                INSERT INTO {target_table} ({", ".join(all_columns)})
+                SELECT * FROM {staging_table}
+                ON CONFLICT ({pk_string}) DO NOTHING;
+            """
         else:
-            sql += ";"
+            update_statements = []
+            if target_table == "icsr_master":
+                for col in update_cols:
+                    if col == version_key:
+                        statement = f"{col} = CASE WHEN EXCLUDED.is_nullified THEN {target_table}.{col} ELSE EXCLUDED.{col} END"
+                        update_statements.append(statement)
+                    else:
+                        update_statements.append(f"{col} = EXCLUDED.{col}")
+            else:
+                update_statements = [f"{col} = EXCLUDED.{col}" for col in update_cols]
+
+            update_clause = ", ".join(update_statements)
+
+            sql = f"""
+                INSERT INTO {target_table} ({", ".join(all_columns)})
+                SELECT * FROM {staging_table}
+                ON CONFLICT ({pk_string}) DO UPDATE
+                SET {update_clause}
+            """
+            if target_table == 'icsr_master' and version_key:
+                sql += f" WHERE {target_table}.{version_key} < EXCLUDED.{version_key} OR EXCLUDED.is_nullified;"
+            elif version_key:
+                sql += f" WHERE {target_table}.{version_key} < EXCLUDED.{version_key};"
+            else:
+                sql += ";"
 
         with self.conn.cursor() as cursor:
             cursor.execute(sql)
@@ -258,41 +288,13 @@ class PostgresLoader(LoaderInterface):
         else:
             raise ValueError(f"Unknown transaction action: {action}")
 
-    def create_metadata_tables(self) -> None:
+    def create_all_tables(self) -> None:
         """
-        Creates the `etl_file_history` table in the database if it does not exist.
+        Creates all defined tables in the schema.py file against the target
+        database. This is an idempotent operation.
         """
-        metadata = sqlalchemy.MetaData()
-        sqlalchemy.Table(
-            "etl_file_history",
-            metadata,
-            sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
-            sqlalchemy.Column("filename", sqlalchemy.String(255), nullable=False),
-            sqlalchemy.Column(
-                "file_hash", sqlalchemy.String(64), nullable=False, unique=True
-            ),
-            sqlalchemy.Column("status", sqlalchemy.String(50), nullable=False),
-            sqlalchemy.Column(
-                "load_timestamp",
-                sqlalchemy.DateTime,
-                server_default=sqlalchemy.func.now(),
-            ),
-            sqlalchemy.Column("rows_processed", sqlalchemy.Integer),
-        )
-        sqlalchemy.Table(
-            "icsr_audit_log",
-            metadata,
-            sqlalchemy.Column("safetyreportid", sqlalchemy.String(255), primary_key=True),
-            sqlalchemy.Column("receiptdate", sqlalchemy.String(255)), # Version key
-            sqlalchemy.Column("icsr_payload", JSONB),
-            sqlalchemy.Column(
-                "load_timestamp",
-                sqlalchemy.DateTime,
-                server_default=sqlalchemy.func.now(),
-            ),
-        )
         metadata.create_all(self.engine)
-        print("Metadata tables created or already exist.")
+        print("All tables created or already exist.")
 
     def _log_file_status(
         self,
@@ -372,7 +374,8 @@ class PostgresLoader(LoaderInterface):
             "icsr_master": {"pk": ["safetyreportid"], "version_key": "receiptdate"},
             "patient_characteristics": {"pk": ["safetyreportid"], "version_key": None},
             "reactions": {"pk": ["safetyreportid", "reactionmeddrapt"], "version_key": None},
-            "drugs": {"pk": ["safetyreportid", "medicinalproduct"], "version_key": None},
+            "drugs": {"pk": ["safetyreportid", "drug_seq"], "version_key": None},
+            "drug_substances": {"pk": ["safetyreportid", "drug_seq", "activesubstancename"], "version_key": None},
             "tests_procedures": {"pk": ["safetyreportid", "testname"], "version_key": None},
             "case_summary_narrative": {"pk": ["safetyreportid"], "version_key": None},
         }

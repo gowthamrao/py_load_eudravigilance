@@ -43,9 +43,8 @@ def process_single_file(
     """
     try:
         file_hash = hashlib.sha256(file_content).hexdigest()
-        # Each worker creates its own engine and loader
-        engine = sqlalchemy.create_engine(db_dsn)
-        loader = PostgresLoader(engine)
+        # Each worker creates its own loader and engine from the DSN
+        loader = PostgresLoader(db_dsn)
 
         file_buffer = io.BytesIO(file_content)
 
@@ -153,7 +152,7 @@ def run(
     files_to_process = []
     if mode == "delta":
         typer.echo("Fetching history of completed files...")
-        main_loader = PostgresLoader(engine)
+        main_loader = PostgresLoader(settings.database.dsn)
         completed_hashes = main_loader.get_completed_file_hashes()
         typer.echo(f"Found {len(completed_hashes)} previously processed files to skip.")
         for file in input_files:
@@ -235,21 +234,21 @@ def init_db(
     ] = f"./{CONFIG_FILE_NAME}",
 ):
     """
-    Initializes the database with the required metadata tables.
+    Initializes the database with all required tables (data, audit, metadata).
     """
     typer.echo("Initializing database...")
     try:
         settings = load_config(path=str(config_file))
-        engine = sqlalchemy.create_engine(settings.database.dsn)
-        loader = PostgresLoader(engine)
-        loader.create_metadata_tables()
-        typer.secho("Database initialization complete.", fg=typer.colors.GREEN)
+        # The DSN is now passed to the loader, not the engine directly
+        loader = PostgresLoader(settings.database.dsn)
+        loader.create_all_tables()
+        typer.secho(
+            "Database initialization complete. All tables created.",
+            fg=typer.colors.GREEN,
+        )
     except Exception as e:
         typer.secho(f"Database initialization failed: {e}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
-    finally:
-        if 'engine' in locals():
-            engine.dispose()
 
 
 if __name__ == "__main__":

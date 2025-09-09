@@ -7,9 +7,13 @@ from py_load_eudravigilance.transformer import transform_and_normalize
 
 # A sample nested dictionary, mimicking the output of the enhanced parser.
 SAMPLE_ICSR_1 = {
+    "senderidentifier": "SENDER1",
+    "receiveridentifier": "RECEIVER1",
     "safetyreportid": "TEST-CASE-001",
     "receiptdate": "20240101",
     "is_nullified": False,
+    "reportercountry": "US",
+    "qualification": "Physician",
     "patientinitials": "FN",
     "patientonsetage": "55",
     "patientsex": "1",
@@ -40,9 +44,13 @@ SAMPLE_ICSR_1 = {
 
 # A second sample ICSR to test multiple records.
 SAMPLE_ICSR_2 = {
+    "senderidentifier": "SENDER2",
+    "receiveridentifier": "RECEIVER2",
     "safetyreportid": "TEST-CASE-002",
     "receiptdate": "20240102",
     "is_nullified": True,
+    "reportercountry": "GB",
+    "qualification": "Pharmacist",
     "patientinitials": "LW",
     "patientonsetage": "78",
     "patientsex": "2",
@@ -95,9 +103,10 @@ def test_transform_and_normalize():
     # 3. Check the content of each buffer
     # Icsr_master table
     master_content = buffers["icsr_master"].read()
-    assert "safetyreportid,receiptdate,is_nullified" in master_content
-    assert "TEST-CASE-001,20240101,False" in master_content
-    assert "TEST-CASE-002,20240102,True" in master_content
+    expected_header = "senderidentifier,receiveridentifier,safetyreportid,receiptdate,is_nullified,reportercountry,qualification"
+    assert expected_header in master_content
+    assert "SENDER1,RECEIVER1,TEST-CASE-001,20240101,False,US,Physician" in master_content
+    assert "SENDER2,RECEIVER2,TEST-CASE-002,20240102,True,GB,Pharmacist" in master_content
 
     # Reactions table
     reactions_content = buffers["reactions"].read()

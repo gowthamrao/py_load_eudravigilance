@@ -33,7 +33,15 @@ def transform_and_normalize(
     """
     # Define the schemas for our target tables
     schemas = {
-        "icsr_master": ["safetyreportid", "receiptdate", "is_nullified"],
+        "icsr_master": [
+            "senderidentifier",
+            "receiveridentifier",
+            "safetyreportid",
+            "receiptdate",
+            "is_nullified",
+            "reportercountry",
+            "qualification",
+        ],
         "patient_characteristics": [
             "safetyreportid",
             "patientinitials",

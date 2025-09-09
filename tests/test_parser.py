@@ -26,8 +26,14 @@ def test_parse_icsr_xml_with_nested_data():
 
     # 2. Assert the content of the first ICSR (with nested data) is correct.
     case1 = parsed_icsrs[0]
+    assert case1["senderidentifier"] == "TESTSENDER"
+    assert case1["receiveridentifier"] == "TESTRECEIVER"
     assert case1["safetyreportid"] == "TEST-CASE-001"
     assert case1["receiptdate"] == "20240101"
+    # The sample file uses <primarysourcecountry> but not <reportercountry>
+    # This tests that the parser correctly returns None if the specific sub-field isn't found.
+    assert case1["reportercountry"] is None
+    assert case1["qualification"] is None
     assert case1["patientinitials"] == "FN"
     assert case1["patientonsetage"] == "55"
     assert case1["patientsex"] == "1"

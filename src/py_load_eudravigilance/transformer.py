@@ -43,12 +43,14 @@ def transform_and_normalize(
         "reactions": ["safetyreportid", "primarysourcereaction", "reactionmeddrapt"],
         "drugs": [
             "safetyreportid",
+            "drug_seq",
             "drugcharacterization",
             "medicinalproduct",
             "drugstructuredosagenumb",
             "drugstructuredosageunit",
             "drugdosagetext",
         ],
+        "drug_substances": ["safetyreportid", "drug_seq", "activesubstancename"],
         "tests_procedures": [
             "safetyreportid",
             "testdate",
@@ -98,11 +100,23 @@ def transform_and_normalize(
             writers["reactions"].writerow(reaction)
             row_counts["reactions"] += 1
 
-        # 3. Populate the drugs table (one-to-many)
+        # 3. Populate the drugs and drug_substances tables (one-to-many)
+        drug_seq = 0
         for drug in icsr_dict.get("drugs", []):
+            drug_seq += 1
             drug["safetyreportid"] = safetyreportid  # Add foreign key
-            writers["drugs"].writerow(drug)
+            drug["drug_seq"] = drug_seq
+            writers["drugs"].writerow({k: drug.get(k) for k in schemas["drugs"]})
             row_counts["drugs"] += 1
+
+            for substance in drug.get("substances", []):
+                substance_row = {
+                    "safetyreportid": safetyreportid,
+                    "drug_seq": drug_seq,
+                    "activesubstancename": substance.get("activesubstancename"),
+                }
+                writers["drug_substances"].writerow(substance_row)
+                row_counts["drug_substances"] += 1
 
         # 4. Populate the tests_procedures table (one-to-many)
         for test in icsr_dict.get("tests", []):

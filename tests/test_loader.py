@@ -227,3 +227,37 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
         assert case2_final.is_nullified is True
         # The receiptdate should NOT have been updated, as per our logic for nullification
         assert case2_final.receiptdate == '20240102'
+
+
+from py_load_eudravigilance.loader import get_loader
+
+def test_get_loader_plugin_system():
+    """
+    Tests the plugin-based get_loader function.
+    This test relies on the entry point being correctly configured in pyproject.toml.
+    """
+    # Note: This test requires the package to be installed in editable mode
+    # (`poetry install`) for the entry points to be discoverable.
+
+    # 1. Test successful discovery of the registered PostgresLoader
+    dsn = "postgresql://user:pass@host:5432/dbname"
+    loader = get_loader(dsn)
+    assert isinstance(loader, PostgresLoader)
+
+    # 2. Test that it finds the loader with a different driver variant
+    dsn_psycopg2 = "postgresql+psycopg2://user:pass@host:5432/dbname"
+    loader_psycopg2 = get_loader(dsn_psycopg2)
+    assert isinstance(loader_psycopg2, PostgresLoader)
+
+    # 3. Test for a non-existent loader
+    dsn_mysql = "mysql://user:pass@host:3306/dbname"
+    with pytest.raises(ValueError) as excinfo:
+        get_loader(dsn_mysql)
+    # Check that the error message is helpful
+    assert "No registered loader found for database dialect 'mysql'" in str(excinfo.value)
+    assert "Available loaders: ['postgresql']" in str(excinfo.value)
+
+    # 4. Test for an invalid DSN
+    with pytest.raises(ValueError) as excinfo:
+        get_loader("not-a-valid-dsn")
+    assert "Could not determine database dialect from DSN" in str(excinfo.value)

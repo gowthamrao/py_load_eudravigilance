@@ -44,6 +44,9 @@ all = ["psycopg2-binary", "sqlalchemy", "s3fs", "gcsfs", "azure-storage-blob", "
 [tool.poetry.scripts]
 eudravigloader = "py_load_eudravigilance.cli:app"
 
+[tool.poetry.plugins."py_load_eudravigilance.loaders"]
+"postgresql" = "py_load_eudravigilance.loader:PostgresLoader"
+
 
 [build-system]
 requires = ["poetry-core"]

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ichicsr xmlns="urn:hl7-org:v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:hl7-org:v3 ICH-ICSR.xsd">
+  <ichicsrMessage>
+    <messageheader>
+      <messagetype>ichicsr</messagetype>
+      <messageformatversion>2.1</messageformatversion>
+      <messagesenderidentifier>SENDER-ID-NULL</messagesenderidentifier>
+      <messagereceiveridentifier>RECEIVER-ID</messagereceiveridentifier>
+      <messagedate>20250103120000</messagedate>
+    </messageheader>
+    <safetyreport>
+      <safetyreportversion>3</safetyreportversion>
+      <safetyreportid>TEST-SCENARIO-01</safetyreportid>
+      <primarysourcecountry>US</primarysourcecountry>
+      <occurcountry>US</occurcountry>
+      <transmissiondateformat>204</transmissiondateformat>
+      <transmissiondate>20250103</transmissiondate>
+      <reporttype>4</reporttype> <!-- Nullification Report Type -->
+      <serious>1</serious>
+      <receivedateformat>102</receivedateformat>
+      <receivedate>20250101</receivedate>
+      <receiptdateformat>102</receiptdateformat>
+      <receiptdate>20250101</receiptdate>
+      <dateofmostrecentinformationformat>102</dateofmostrecentinformationformat>
+      <dateofmostrecentinformation>20250103</dateofmostrecentinformation> <!-- Newer date -->
+      <reportnullification>true</reportnullification>
+      <!-- Sparse record, no patient data -->
+    </safetyreport>
+  </ichicsrMessage>
+</ichicsr>

@@ -7,6 +7,7 @@ into a relational format suitable for bulk loading into the target database.
 
 import csv
 import io
+import json
 from typing import Any, Dict, Generator, IO
 
 
@@ -48,6 +49,15 @@ def transform_and_normalize(
             "drugstructuredosageunit",
             "drugdosagetext",
         ],
+        "tests_procedures": [
+            "safetyreportid",
+            "testdate",
+            "testname",
+            "testresult",
+            "testresultunit",
+            "testcomments",
+        ],
+        "case_summary_narrative": ["safetyreportid", "narrative"],
     }
 
     # Initialize buffers, writers, and counts for each table
@@ -91,8 +101,69 @@ def transform_and_normalize(
             writers["drugs"].writerow(drug)
             row_counts["drugs"] += 1
 
+        # 4. Populate the tests_procedures table (one-to-many)
+        for test in icsr_dict.get("tests", []):
+            test["safetyreportid"] = safetyreportid  # Add foreign key
+            writers["tests_procedures"].writerow(test)
+            row_counts["tests_procedures"] += 1
+
+        # 5. Populate the narrative table (one-to-one)
+        if icsr_dict.get("narrative"):
+            narrative_row = {"safetyreportid": safetyreportid, "narrative": icsr_dict["narrative"]}
+            writers["case_summary_narrative"].writerow(narrative_row)
+            row_counts["case_summary_narrative"] += 1
+
     # Rewind all buffers to be ready for reading
     for buffer in buffers.values():
         buffer.seek(0)
 
     return buffers, row_counts
+
+
+def transform_for_audit(
+    icsr_generator: Generator[Dict[str, Any], None, None]
+) -> Tuple[io.StringIO, int]:
+    """
+    Transforms a generator of full ICSR dictionaries into an in-memory CSV
+    buffer containing the data for the audit log table.
+
+    Each row contains the safety report ID, the version (receipt date), and
+    the full ICSR payload as a JSON string.
+
+    Args:
+        icsr_generator: A generator yielding full nested dictionaries from
+                        the audit parser.
+
+    Returns:
+        A tuple containing:
+        - An `io.StringIO` CSV buffer for the `icsr_audit_log` table.
+        - The total row count for the buffer.
+    """
+    schema = ["safetyreportid", "receiptdate", "icsr_payload"]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=schema)
+    writer.writeheader()
+    row_count = 0
+
+    for icsr_dict in icsr_generator:
+        # The dictionary is nested, e.g., {'ichicsrMessage': {'safetyreport': ...}}
+        safety_report = icsr_dict.get("ichicsrMessage", {}).get("safetyreport", {})
+        if not safety_report:
+            continue
+
+        safetyreportid = safety_report.get("safetyreportid")
+        receiptdate = safety_report.get("receiptdate")
+
+        if not safetyreportid:
+            continue
+
+        row = {
+            "safetyreportid": safetyreportid,
+            "receiptdate": receiptdate,
+            "icsr_payload": json.dumps(safety_report),
+        }
+        writer.writerow(row)
+        row_count += 1
+
+    buffer.seek(0)
+    return buffer, row_count

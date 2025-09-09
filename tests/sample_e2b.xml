@@ -46,6 +46,14 @@
         <medicinalproduct>DrugB</medicinalproduct>
         <drugdosagetext>50 mg</drugdosagetext>
       </drug>
+      <test>
+        <testdate>20240101</testdate>
+        <testname>Blood Pressure</testname>
+        <testresult>120/80</testresult>
+        <testresultunit>mmHg</testresultunit>
+        <testcomments>Normal</testcomments>
+      </test>
+      <narrativeincludeclinical>This is the case narrative for TEST-CASE-001.</narrativeincludeclinical>
     </safetyreport>
   </ichicsrMessage>
   <ichicsrMessage>

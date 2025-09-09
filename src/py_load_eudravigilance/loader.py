@@ -11,7 +11,8 @@ from abc import ABC, abstractmethod
 from io import IOBase
 from typing import Any, Dict, List
 from psycopg2.extensions import connection as PgConnection
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
+from sqlalchemy.engine.url import make_url
 
 
 # Using Any for Connection to avoid a premature driver import in the interface.
@@ -101,27 +102,42 @@ class PostgresLoader(LoaderInterface):
         Initializes the PostgresLoader with database connection details.
 
         Args:
-            dsn: The Data Source Name string for connecting to PostgreSQL
-                 (e.g., "dbname=test user=postgres password=secret").
+            dsn: A SQLAlchemy-compatible database connection string or a
+                 psycopg2-style DSN string.
         """
-        self.dsn = dsn
         self.conn: PgConnection | None = None
-        # Convert DSN string to a dict for SQLAlchemy's connect_args
-        connect_args = {
-            item.split("=")[0]: item.split("=")[1]
-            for item in dsn.split()
-            if "=" in item
-        }
-        self.engine = sqlalchemy.create_engine(
-            "postgresql+psycopg2://", connect_args=connect_args
-        )
         self.staging_table_name: str | None = None
+
+        try:
+            # Create the SQLAlchemy engine directly from the DSN
+            self.engine = sqlalchemy.create_engine(dsn)
+
+            # For psycopg2, we need to convert the URL to a DSN string
+            url = make_url(dsn)
+            self.psycopg2_dsn = (
+                f"dbname='{url.database}' user='{url.username}' "
+                f"password='{url.password}' host='{url.host}' port='{url.port}'"
+            )
+
+        except Exception as e:
+            # Handle cases where the DSN might be in the simple format psycopg2
+            # expects but SQLAlchemy does not.
+            print(f"Could not parse DSN for SQLAlchemy, falling back. Error: {e}")
+            self.psycopg2_dsn = dsn
+            connect_args = {
+                item.split("=")[0]: item.split("=")[1]
+                for item in dsn.split()
+                if "=" in item
+            }
+            self.engine = sqlalchemy.create_engine(
+                "postgresql+psycopg2://", connect_args=connect_args
+            )
 
 
     def connect(self) -> PgConnection:
         """Establishes and returns a connection to the PostgreSQL database."""
         if self.conn is None or self.conn.closed:
-            self.conn = psycopg2.connect(self.dsn)
+            self.conn = psycopg2.connect(self.psycopg2_dsn)
         return self.conn
 
     def validate_schema(self, schema_definition: Dict[str, Any]) -> bool:
@@ -174,7 +190,11 @@ class PostgresLoader(LoaderInterface):
         if self.conn is None or self.conn.closed:
             self.connect()
 
-        sql = f"COPY {target_table} FROM STDIN WITH CSV HEADER"
+        column_sql = ""
+        if columns:
+            column_sql = f"({', '.join(columns)})"
+
+        sql = f"COPY {target_table} {column_sql} FROM STDIN WITH CSV HEADER"
 
         with self.conn.cursor() as cursor:
             cursor.copy_expert(sql, data_stream)
@@ -259,6 +279,18 @@ class PostgresLoader(LoaderInterface):
             ),
             sqlalchemy.Column("rows_processed", sqlalchemy.Integer),
         )
+        sqlalchemy.Table(
+            "icsr_audit_log",
+            metadata,
+            sqlalchemy.Column("safetyreportid", sqlalchemy.String(255), primary_key=True),
+            sqlalchemy.Column("receiptdate", sqlalchemy.String(255)), # Version key
+            sqlalchemy.Column("icsr_payload", JSONB),
+            sqlalchemy.Column(
+                "load_timestamp",
+                sqlalchemy.DateTime,
+                server_default=sqlalchemy.func.now(),
+            ),
+        )
         metadata.create_all(self.engine)
         print("Metadata tables created or already exist.")
 
@@ -341,6 +373,8 @@ class PostgresLoader(LoaderInterface):
             "patient_characteristics": {"pk": ["safetyreportid"], "version_key": None},
             "reactions": {"pk": ["safetyreportid", "reactionmeddrapt"], "version_key": None},
             "drugs": {"pk": ["safetyreportid", "medicinalproduct"], "version_key": None},
+            "tests_procedures": {"pk": ["safetyreportid", "testname"], "version_key": None},
+            "case_summary_narrative": {"pk": ["safetyreportid"], "version_key": None},
         }
 
         self.manage_transaction("BEGIN")
@@ -358,7 +392,13 @@ class PostgresLoader(LoaderInterface):
                     staging_table = self.prepare_load(
                         target_table=table_name, load_mode=load_mode
                     )
-                    self.bulk_load_native(buffer, staging_table, columns=[])
+                    # Get columns from the CSV header
+                    buffer.seek(0)
+                    header = buffer.readline().strip()
+                    columns = header.split(',')
+                    buffer.seek(0) # Rewind for the loader
+
+                    self.bulk_load_native(buffer, staging_table, columns=columns)
 
                     if load_mode == "delta":
                         self.handle_upsert(
@@ -376,5 +416,51 @@ class PostgresLoader(LoaderInterface):
             self.manage_transaction("ROLLBACK")
             # Log failure in a separate transaction
             self._log_file_status(file_path, file_hash, "failed")
+            self.manage_transaction("COMMIT")
+            raise e
+
+    def load_audit_data(
+        self,
+        buffer: IOBase,
+        row_count: int,
+        load_mode: str,
+        file_path: str,
+        file_hash: str,
+    ) -> None:
+        """
+        Orchestrates the loading of the audit data (JSON) into the
+        `icsr_audit_log` table within a single transaction.
+        """
+        TABLE_NAME = "icsr_audit_log"
+        METADATA = {"pk": ["safetyreportid"], "version_key": "receiptdate"}
+
+        self.manage_transaction("BEGIN")
+        try:
+            self._log_file_status(file_path, file_hash, "running_audit", row_count)
+
+            staging_table = self.prepare_load(
+                target_table=TABLE_NAME, load_mode=load_mode
+            )
+            self.bulk_load_native(
+                buffer,
+                staging_table,
+                columns=["safetyreportid", "receiptdate", "icsr_payload"],
+            )
+
+            if load_mode == "delta":
+                self.handle_upsert(
+                    staging_table=staging_table,
+                    target_table=TABLE_NAME,
+                    primary_keys=METADATA["pk"],
+                    version_key=METADATA["version_key"],
+                )
+
+            self._log_file_status(file_path, file_hash, "completed_audit", row_count)
+            self.manage_transaction("COMMIT")
+
+        except Exception as e:
+            print(f"Error during audit load for file {file_path}. Rolling back.")
+            self.manage_transaction("ROLLBACK")
+            self._log_file_status(file_path, file_hash, "failed_audit")
             self.manage_transaction("COMMIT")
             raise e

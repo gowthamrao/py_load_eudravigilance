@@ -16,8 +16,8 @@ from typing_extensions import Annotated
 
 from .config import load_config, CONFIG_FILE_NAME
 from .loader import PostgresLoader
-from .parser import parse_icsr_xml
-from .transformer import transform_and_normalize
+from .parser import parse_icsr_xml, parse_icsr_xml_for_audit
+from .transformer import transform_and_normalize, transform_for_audit
 
 # Create a Typer application instance
 app = typer.Typer(
@@ -120,27 +120,51 @@ def run(
 
                 file_buffer = io.BytesIO(file_content)
 
-                # E&T: Parse and normalize the data into multiple buffers
-                typer.echo("Parsing and normalizing XML data...")
-                icsr_generator = parse_icsr_xml(file_buffer)
-                buffers, row_counts = transform_and_normalize(icsr_generator)
+                if settings.schema_type == "normalized":
+                    typer.echo("Running 'normalized' schema workflow...")
+                    # E&T: Parse and normalize the data into multiple buffers
+                    typer.echo("Parsing and normalizing XML data...")
+                    icsr_generator = parse_icsr_xml(file_buffer)
+                    buffers, row_counts = transform_and_normalize(icsr_generator)
 
-                # If there are no master records, we can skip the file
-                if not row_counts.get("icsr_master"):
-                    typer.echo("No ICSR messages found in file. Skipping.")
-                    # Log as completed with 0 rows, in its own transaction
-                    loader._log_file_status(file_path, file_hash, "completed", 0)
-                    loader.manage_transaction("COMMIT")
-                    continue
+                    # If there are no master records, we can skip the file
+                    if not row_counts.get("icsr_master"):
+                        typer.echo("No ICSR messages found in file. Skipping.")
+                        # Log as completed with 0 rows, in its own transaction
+                        loader._log_file_status(file_path, file_hash, "completed", 0)
+                        loader.manage_transaction("COMMIT")
+                        continue
 
-                # L: Load the normalized data. The loader handles the transaction.
-                loader.load_normalized_data(
-                    buffers=buffers,
-                    row_counts=row_counts,
-                    load_mode=mode,
-                    file_path=file_path,
-                    file_hash=file_hash,
-                )
+                    # L: Load the normalized data. The loader handles the transaction.
+                    loader.load_normalized_data(
+                        buffers=buffers,
+                        row_counts=row_counts,
+                        load_mode=mode,
+                        file_path=file_path,
+                        file_hash=file_hash,
+                    )
+
+                elif settings.schema_type == "audit":
+                    typer.echo("Running 'audit' schema workflow...")
+                    # E&T: Parse and transform the data for the audit log
+                    typer.echo("Parsing and transforming XML for audit...")
+                    icsr_generator = parse_icsr_xml_for_audit(file_buffer)
+                    buffer, row_count = transform_for_audit(icsr_generator)
+
+                    if row_count == 0:
+                        typer.echo("No ICSR messages found in file. Skipping.")
+                        loader._log_file_status(file_path, file_hash, "completed_audit", 0)
+                        loader.manage_transaction("COMMIT")
+                        continue
+
+                    # L: Load the audit data.
+                    loader.load_audit_data(
+                        buffer=buffer,
+                        row_count=row_count,
+                        load_mode=mode,
+                        file_path=file_path,
+                        file_hash=file_hash,
+                    )
 
                 files_processed += 1
                 typer.secho(f"Successfully processed file: {file_path}", fg=typer.colors.GREEN)

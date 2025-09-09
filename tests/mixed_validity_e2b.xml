@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<file>
+  <!-- Message 1: Valid ICSR -->
+  <ichicsrMessage xmlns="urn:hl7-org:v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <messagedate>20240101120000</messagedate>
+    <messagesenderidentifier>SENDER1</messagesenderidentifier>
+    <safetyreport>
+      <safetyreportid>TEST-VALID-001</safetyreportid>
+      <receiptdate>20240101</receiptdate>
+      <primarysource>
+        <reportercountry>GB</reportercountry>
+      </primarysource>
+      <patient>
+        <patientinitials>AB</patientinitials>
+      </patient>
+    </safetyreport>
+  </ichicsrMessage>
+  <!-- Message 2: Invalid ICSR (missing safetyreportid) -->
+  <ichicsrMessage xmlns="urn:hl7-org:v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <messagedate>20240102120000</messagedate>
+    <messagesenderidentifier>SENDER2</messagesenderidentifier>
+    <safetyreport>
+      <!-- <safetyreportid>TEST-INVALID-002</safetyreportid> -->
+      <receiptdate>20240102</receiptdate>
+      <primarysource>
+        <reportercountry>US</reportercountry>
+      </primarysource>
+      <patient>
+        <patientinitials>CD</patientinitials>
+      </patient>
+    </safetyreport>
+  </ichicsrMessage>
+  <!-- Message 3: Valid ICSR -->
+  <ichicsrMessage xmlns="urn:hl7-org:v3" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <messagedate>20240103120000</messagedate>
+    <messagesenderidentifier>SENDER3</messagesenderidentifier>
+    <safetyreport>
+      <safetyreportid>TEST-VALID-003</safetyreportid>
+      <receiptdate>20240103</receiptdate>
+      <primarysource>
+        <reportercountry>DE</reportercountry>
+      </primarysource>
+      <patient>
+        <patientinitials>EF</patientinitials>
+      </patient>
+    </safetyreport>
+  </ichicsrMessage>
+</file>

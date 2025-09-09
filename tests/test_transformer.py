@@ -77,9 +77,12 @@ def test_transform_and_normalize():
     icsr_generator = (i for i in [SAMPLE_ICSR_1, SAMPLE_ICSR_2])
 
     # Run the transformation
-    buffers, row_counts = transform_and_normalize(icsr_generator)
+    buffers, row_counts, errors = transform_and_normalize(icsr_generator)
 
-    # 1. Check the overall structure and keys
+    # 1. Check for errors
+    assert not errors, "Should be no errors for valid test data"
+
+    # 2. Check the overall structure and keys
     expected_tables = [
         "icsr_master",
         "patient_characteristics",

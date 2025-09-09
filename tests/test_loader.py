@@ -66,7 +66,8 @@ def test_full_normalized_load(postgres_container, db_engine):
 
     file_buffer = io.BytesIO(initial_xml)
     icsr_generator = parse_icsr_xml(file_buffer)
-    buffers, row_counts = transform_and_normalize(icsr_generator)
+    buffers, row_counts, errors = transform_and_normalize(icsr_generator)
+    assert not errors
 
     # 4. Load: The load_normalized_data method handles the transaction itself
     loader.load_normalized_data(
@@ -169,7 +170,10 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
 
     file_buffer_initial = io.BytesIO(initial_xml)
     icsr_generator_initial = parse_icsr_xml(file_buffer_initial)
-    buffers_initial, row_counts_initial = transform_and_normalize(icsr_generator_initial)
+    buffers_initial, row_counts_initial, errors_initial = transform_and_normalize(
+        icsr_generator_initial
+    )
+    assert not errors_initial
 
     loader.load_normalized_data(
         buffers=buffers_initial,
@@ -201,7 +205,10 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
 """
     file_buffer_delta = io.BytesIO(nullification_xml)
     icsr_generator_delta = parse_icsr_xml(file_buffer_delta)
-    buffers_delta, row_counts_delta = transform_and_normalize(icsr_generator_delta)
+    buffers_delta, row_counts_delta, errors_delta = transform_and_normalize(
+        icsr_generator_delta
+    )
+    assert not errors_delta
 
     loader.load_normalized_data(
         buffers=buffers_delta,

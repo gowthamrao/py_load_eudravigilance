@@ -235,3 +235,131 @@ def test_icsr_amendment_update(loader):
         assert result is not None
         assert result._asdict()["senderidentifier"] == "UpdatedSender"
         assert result._asdict()["date_of_most_recent_info"] == "20250102"
+
+
+def test_icsr_nullification(loader):
+    """
+    Tests that the delta load logic correctly handles ICSR nullifications.
+    """
+    # 1. Ensure all application tables are created
+    loader.create_all_tables()
+
+    # 2. Define the initial version of an ICSR
+    report_id = "TEST-NULLIFY-01"
+    initial_csv = (
+        "safetyreportid,date_of_most_recent_info,receiptdate,is_nullified,senderidentifier\n"
+        f"{report_id},20250201,20250201,False,OriginalSender\n"
+    )
+    initial_buffers = {"icsr_master": StringIO(initial_csv)}
+    initial_counts = {"icsr_master": 1}
+
+    # 3. Load the initial version
+    loader.load_normalized_data(
+        buffers=initial_buffers,
+        row_counts=initial_counts,
+        load_mode="delta",
+        file_path="/fake/nullify/1",
+        file_hash="hash_nullify_1",
+    )
+
+    # 4. Verify the initial state
+    with loader.engine.connect() as conn:
+        result = conn.execute(
+            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+        ).first()
+        assert result is not None
+        assert result._asdict()["is_nullified"] is False
+        assert result._asdict()["senderidentifier"] == "OriginalSender"
+
+    # 5. Define the nullification record (newer date, is_nullified=True)
+    # Note: The senderidentifier is missing here to simulate a sparse record.
+    # The loader logic should preserve the original senderidentifier.
+    nullify_csv = (
+        "safetyreportid,date_of_most_recent_info,receiptdate,is_nullified\n"
+        f"{report_id},20250202,20250201,True\n"
+    )
+    nullify_buffers = {"icsr_master": StringIO(nullify_csv)}
+    nullify_counts = {"icsr_master": 1}
+
+    # 6. Load the nullification record
+    loader.load_normalized_data(
+        buffers=nullify_buffers,
+        row_counts=nullify_counts,
+        load_mode="delta",
+        file_path="/fake/nullify/2",
+        file_hash="hash_nullify_2",
+    )
+
+    # 7. Verify the final state
+    with loader.engine.connect() as conn:
+        # Check that there is still only one record
+        count = conn.execute(
+            sqlalchemy.text(f"SELECT COUNT(*) FROM icsr_master WHERE safetyreportid = '{report_id}'")
+        ).scalar_one()
+        assert count == 1
+
+        # Check that the record was correctly nullified
+        result = conn.execute(
+            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+        ).first()
+        assert result is not None
+        # The primary assertion: the flag is now True
+        assert result._asdict()["is_nullified"] is True
+        # The secondary assertion: original data was preserved
+        assert result._asdict()["senderidentifier"] == "OriginalSender"
+        assert result._asdict()["date_of_most_recent_info"] == "20250202"
+
+
+def test_drugs_table_loading(loader):
+    """
+    Tests that data is correctly loaded into the `drugs` table,
+    specifically verifying the `drugdosagetext` field.
+    """
+    # 1. Ensure all application tables are created
+    loader.create_all_tables()
+    report_id = "TEST-DRUG-01"
+
+    # We need to load a master record first due to foreign key constraints
+    master_csv = (
+        "safetyreportid,date_of_most_recent_info,is_nullified\n"
+        f"{report_id},20250301,False\n"
+    )
+    # 2. Define the drug data, including the field in question
+    drug_csv = (
+        "safetyreportid,drug_seq,medicinalproduct,drugdosagetext\n"
+        f'{report_id},1,Test-Drug-A,"Take one tablet daily"\n'
+        f'{report_id},2,Test-Drug-B,"Two pills, twice a day"\n'
+    )
+
+    buffers = {
+        "icsr_master": StringIO(master_csv),
+        "drugs": StringIO(drug_csv),
+    }
+    counts = {"icsr_master": 1, "drugs": 2}
+
+    # 3. Load the data
+    loader.load_normalized_data(
+        buffers=buffers,
+        row_counts=counts,
+        load_mode="delta",
+        file_path="/fake/drug/1",
+        file_hash="hash_drug_1",
+    )
+
+    # 4. Verify the data in the drugs table
+    with loader.engine.connect() as conn:
+        result = conn.execute(
+            sqlalchemy.text(f"SELECT * FROM drugs WHERE safetyreportid = '{report_id}' ORDER BY drug_seq")
+        ).fetchall()
+
+        assert len(result) == 2
+
+        # Check the first drug record
+        drug1 = result[0]._asdict()
+        assert drug1["medicinalproduct"] == "Test-Drug-A"
+        assert drug1["drugdosagetext"] == "Take one tablet daily"
+
+        # Check the second drug record
+        drug2 = result[1]._asdict()
+        assert drug2["medicinalproduct"] == "Test-Drug-B"
+        assert drug2["drugdosagetext"] == "Two pills, twice a day"

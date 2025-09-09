@@ -12,18 +12,19 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
-def run_etl(settings: Settings, max_workers: int | None = None):
+def run_etl(settings: Settings, mode: str, max_workers: int | None = None):
     """
     The main entry point for the ETL orchestration.
 
-    This function discovers files, filters out already processed ones,
+    This function discovers files, filters out already processed ones (in delta mode),
     and processes the remaining files in parallel.
 
     Args:
         settings: The application configuration.
+        mode: The load mode ('delta' or 'full').
         max_workers: The maximum number of processes to use. Defaults to CPU count.
     """
-    logger.info("Starting ETL process...")
+    logger.info(f"Starting ETL process in '{mode}' mode...")
     logger.info(f"Schema type: {settings.schema_type}")
     logger.info(f"Source URI: {settings.source_uri}")
 
@@ -31,13 +32,23 @@ def run_etl(settings: Settings, max_workers: int | None = None):
     all_files = discover_files(settings.source_uri)
     logger.info(f"Found {len(all_files)} files at source.")
 
-    # Step 2: Filter out completed files based on their hash
-    files_to_process_map = filter_completed_files(all_files, settings)
+    # Step 2: Filter out completed files based on their hash (only in delta mode)
+    if mode == "delta":
+        files_to_process_map = filter_completed_files(all_files, settings)
+    elif mode == "full":
+        logger.info("Full load mode: all discovered files will be processed.")
+        # In full mode, we still need the file hashes for logging.
+        files_to_process_map = {
+            file_path: _calculate_file_hash(file_path) for file_path in all_files
+        }
+    else:
+        raise ValueError(f"Unknown load mode: {mode}")
+
     logger.info(f"{len(files_to_process_map)} new files to process.")
 
     # Step 3: Process files in parallel
     if files_to_process_map:
-       process_files_parallel(files_to_process_map, settings, max_workers)
+        process_files_parallel(files_to_process_map, settings, mode, max_workers)
 
     logger.info("ETL process finished.")
 
@@ -118,7 +129,9 @@ import concurrent.futures
 from . import parser, transformer, loader
 from typing import Tuple
 
-def process_files_parallel(files_map: dict[str, str], settings: Settings, max_workers: int | None = None):
+def process_files_parallel(
+    files_map: dict[str, str], settings: Settings, mode: str, max_workers: int | None = None
+):
     """
     Processes a dictionary of files in parallel using a process pool.
     """
@@ -126,7 +139,7 @@ def process_files_parallel(files_map: dict[str, str], settings: Settings, max_wo
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks to the executor
         future_to_file = {
-            executor.submit(process_file, path, hash_val, settings): path
+            executor.submit(process_file, path, hash_val, settings, mode): path
             for path, hash_val in files_map.items()
         }
 
@@ -154,7 +167,10 @@ def process_files_parallel(files_map: dict[str, str], settings: Settings, max_wo
 
 import os
 
-def process_file(file_path: str, file_hash: str, settings: Settings) -> Tuple[bool, str]:
+
+def process_file(
+    file_path: str, file_hash: str, settings: Settings, mode: str
+) -> Tuple[bool, str]:
     """
     Processes a single file: opens, parses, transforms, and loads its data.
     This function is designed to be run in a separate process.
@@ -168,16 +184,20 @@ def process_file(file_path: str, file_hash: str, settings: Settings) -> Tuple[bo
             if settings.schema_type == "normalized":
                 # E -> T -> L for Normalized Schema
                 parsed_stream = parser.parse_icsr_xml(f)
-                buffers, counts, errors = transformer.transform_and_normalize(parsed_stream)
+                buffers, counts, errors = transformer.transform_and_normalize(
+                    parsed_stream
+                )
 
                 if errors:
-                    logger.warning(f"Encountered {len(errors)} parsing errors in {file_path}. See quarantine.")
+                    logger.warning(
+                        f"Encountered {len(errors)} parsing errors in {file_path}. See quarantine."
+                    )
                     # Here you could add logic to send errors to a quarantine queue/location
 
                 db_loader.load_normalized_data(
                     buffers=buffers,
                     row_counts=counts,
-                    load_mode="delta",
+                    load_mode=mode,
                     file_path=file_path,
                     file_hash=file_hash,
                 )
@@ -191,14 +211,16 @@ def process_file(file_path: str, file_hash: str, settings: Settings) -> Tuple[bo
                 db_loader.load_audit_data(
                     buffer=buffer,
                     row_count=count,
-                    load_mode="delta",
+                    load_mode=mode,
                     file_path=file_path,
                     file_hash=file_hash,
                 )
                 return True, f"Loaded {count} records into audit schema."
             else:
                 # This case should ideally be caught earlier, but serves as a safeguard
-                raise ValueError(f"Invalid schema_type in worker: {settings.schema_type}")
+                raise ValueError(
+                    f"Invalid schema_type in worker: {settings.schema_type}"
+                )
 
     except Exception as e:
         logger.error(f"Failed to process {file_path}: {e}", exc_info=True)

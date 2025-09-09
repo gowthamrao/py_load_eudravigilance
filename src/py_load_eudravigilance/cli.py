@@ -74,13 +74,6 @@ def run(
     if source_uri:
         settings.source_uri = source_uri
 
-    # The 'mode' is not yet used by the new run module, but could be in the future.
-    # For now, the run module implicitly handles 'delta' logic.
-    # A full implementation would pass this 'mode' to the run_etl function.
-    if mode == 'full':
-        typer.secho("Warning: 'full' mode is not fully implemented in the new run module yet. Running as 'delta'.", fg=typer.colors.YELLOW)
-
-
     if not settings.source_uri:
         typer.secho("Error: A source URI must be provided via argument or in the config file.", fg=typer.colors.RED)
         raise typer.Exit(code=1)
@@ -89,7 +82,7 @@ def run(
 
     # 2. Call the main ETL orchestration function
     try:
-        etl_run.run_etl(settings, max_workers=workers)
+        etl_run.run_etl(settings, mode=mode, max_workers=workers)
         typer.secho("\nETL process completed successfully.", fg=typer.colors.GREEN)
     except Exception as e:
         typer.secho(f"\nAn error occurred during the ETL process: {e}", fg=typer.colors.RED)

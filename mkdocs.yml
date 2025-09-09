@@ -1,0 +1,26 @@
+site_name: py-load-eudravigilance
+theme:
+  name: material
+  palette:
+    # Palette toggle for light vs dark mode
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+nav:
+  - 'Home': 'index.md'
+  - 'User Guide':
+    - 'Installation': 'user_guide/installation.md'
+    - 'Configuration': 'user_guide/configuration.md'
+    - 'CLI Usage': 'user_guide/cli_usage.md'
+  - 'Architecture':
+    - 'Overview': 'architecture/overview.md'
+    - 'Database Schema': 'architecture/schema.md'
+  - 'Developer Guide':
+    - 'Contributing': 'developer_guide/contributing.md'
+    - 'Creating a New Loader': 'developer_guide/new_loader.md'

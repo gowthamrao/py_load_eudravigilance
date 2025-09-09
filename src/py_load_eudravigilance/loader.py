@@ -287,6 +287,9 @@ class PostgresLoader(LoaderInterface):
                 if col.name == "is_nullified":
                     # The nullification flag should always be updated from the source.
                     update_dict[col.name] = excluded[col.name]
+                elif col.name == version_key:
+                    # The version key should always be updated from the incoming record
+                    update_dict[col.name] = excluded[col.name]
                 elif has_nullified_col:
                     # For all other columns, keep the existing value if the new
                     # record is a nullification; otherwise, take the new value.

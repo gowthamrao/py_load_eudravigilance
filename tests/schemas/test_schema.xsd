@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+  <xs:element name="ichicsrMessage">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="safetyreport" type="SafetyReportType"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="SafetyReportType">
+    <xs:sequence>
+      <xs:element name="safetyreportid" type="xs:string"/>
+      <xs:element name="patient" type="PatientType"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="PatientType">
+    <xs:sequence>
+      <xs:element name="patientinitials" type="xs:string"/>
+      <xs:element name="patientsex" type="xs:string"/>
+    </xs:sequence>
+  </xs:complexType>
+
+</xs:schema>

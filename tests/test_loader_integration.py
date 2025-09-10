@@ -1,4 +1,5 @@
 from io import StringIO
+import io
 
 import pytest
 import sqlalchemy
@@ -336,6 +337,57 @@ def test_icsr_nullification(loader):
         # The secondary assertion: original data was preserved
         assert result._asdict()["senderidentifier"] == "OriginalSender"
         assert result._asdict()["date_of_most_recent_info"] == "20250202"
+
+
+def test_upsert_with_server_default(loader):
+    """
+    Tests that the upsert logic correctly ignores columns with server-side
+    defaults, preventing them from being included in the SET clause.
+    """
+    metadata = sqlalchemy.MetaData()
+    table_name = "server_default_test"
+    sqlalchemy.Table(
+        table_name,
+        metadata,
+        sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
+        sqlalchemy.Column("data", sqlalchemy.String(50)),
+        sqlalchemy.Column(
+            "last_updated",
+            sqlalchemy.DateTime,
+            server_default=sqlalchemy.func.now(),
+        ),
+    )
+    metadata.create_all(loader.engine)
+
+    # Insert initial data
+    with loader.engine.begin() as conn:
+        conn.execute(
+            sqlalchemy.text(f"INSERT INTO {table_name} (id, data) VALUES (1, 'initial')")
+        )
+
+    # Prepare for upsert
+    with loader.engine.begin() as conn:
+        staging_table_name = loader.prepare_load(conn, table_name, load_mode="delta")
+        csv_data = "id,data\n1,updated\n"
+        data_stream = io.StringIO(csv_data)
+        loader.bulk_load_native(conn, data_stream, staging_table_name, ["id", "data"])
+
+        # This is the key part of the test: handle_upsert should not fail
+        # and should not try to update the 'last_updated' column.
+        loader.handle_upsert(
+            conn,
+            staging_table=staging_table_name,
+            target_table=table_name,
+            primary_keys=["id"],
+            version_key=None,
+        )
+
+    # Verify that the data was updated
+    with loader.engine.connect() as conn:
+        result = conn.execute(
+            sqlalchemy.text(f"SELECT data FROM {table_name} WHERE id = 1")
+        ).scalar_one()
+        assert result == "updated"
 
 
 def test_drugs_table_loading(loader):

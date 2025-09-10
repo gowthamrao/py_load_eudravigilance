@@ -5,14 +5,22 @@ It handles file discovery, parallel processing, and the overall workflow,
 separating these concerns from the CLI interface.
 """
 import logging
+
 from .config import Settings
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
-def run_etl(settings: Settings, mode: str, max_workers: int | None = None, validate: bool = False):
+def run_etl(
+    settings: Settings,
+    mode: str,
+    max_workers: int | None = None,
+    validate: bool = False,
+):
     """
     The main entry point for the ETL orchestration.
 
@@ -30,7 +38,6 @@ def run_etl(settings: Settings, mode: str, max_workers: int | None = None, valid
     logger.info(f"Source URI: {settings.source_uri}")
     if validate:
         logger.info(f"XSD Validation: ENABLED. Schema path: {settings.xsd_schema_path}")
-
 
     # Step 1: Discover files using fsspec
     all_files = discover_files(settings.source_uri)
@@ -52,14 +59,19 @@ def run_etl(settings: Settings, mode: str, max_workers: int | None = None, valid
 
     # Step 3: Process files in parallel
     if files_to_process_map:
-        process_files_parallel(files_to_process_map, settings, mode, max_workers, validate)
+        process_files_parallel(
+            files_to_process_map, settings, mode, max_workers, validate
+        )
 
     logger.info("ETL process finished.")
 
 
-import fsspec
 import hashlib
+
+import fsspec
+
 from . import loader
+
 
 def _calculate_file_hash(file_path: str) -> str:
     """Calculates the SHA-256 hash of a file's content."""
@@ -109,7 +121,9 @@ def filter_completed_files(files: list[str], settings: Settings) -> dict[str, st
         completed_hashes = db_loader.get_completed_file_hashes()
         logger.info(f"Found {len(completed_hashes)} completed files in the database.")
     except Exception as e:
-        logger.error(f"Could not connect to the database to get completed files. Aborting. Error: {e}")
+        logger.error(
+            f"Could not connect to the database to get completed files. Aborting. Error: {e}"
+        )
         return {}
 
     files_to_process = {}
@@ -120,7 +134,9 @@ def filter_completed_files(files: list[str], settings: Settings) -> dict[str, st
             if file_hash not in completed_hashes:
                 files_to_process[file_path] = file_hash
             else:
-                logger.info(f"Skipping '{file_path}' as it has already been processed (hash: {file_hash[:7]}...).")
+                logger.info(
+                    f"Skipping '{file_path}' as it has already been processed (hash: {file_hash[:7]}...)."
+                )
         except FileNotFoundError:
             logger.error(f"File not found during hashing: {file_path}. Skipping.")
         except Exception as e:
@@ -130,20 +146,30 @@ def filter_completed_files(files: list[str], settings: Settings) -> dict[str, st
 
 
 import concurrent.futures
-from . import parser, transformer, loader
 from typing import Tuple
 
+from . import loader, parser, transformer
+
+
 def process_files_parallel(
-    files_map: dict[str, str], settings: Settings, mode: str, max_workers: int | None = None, validate: bool = False
+    files_map: dict[str, str],
+    settings: Settings,
+    mode: str,
+    max_workers: int | None = None,
+    validate: bool = False,
 ):
     """
     Processes a dictionary of files in parallel using a process pool.
     """
-    logger.info(f"Starting parallel processing with max_workers={max_workers or 'default'}.")
+    logger.info(
+        f"Starting parallel processing with max_workers={max_workers or 'default'}."
+    )
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         # Submit all tasks to the executor
         future_to_file = {
-            executor.submit(process_file, path, hash_val, settings, mode, validate): path
+            executor.submit(
+                process_file, path, hash_val, settings, mode, validate
+            ): path
             for path, hash_val in files_map.items()
         }
 
@@ -160,17 +186,21 @@ def process_files_parallel(
                     logger.error(f"Failed to process {file_path}: {message}")
                     failure_count += 1
             except Exception as exc:
-                logger.error(f"{file_path} generated an exception: {exc}", exc_info=True)
+                logger.error(
+                    f"{file_path} generated an exception: {exc}", exc_info=True
+                )
                 failure_count += 1
 
-    logger.info(f"Parallel processing finished. Success: {success_count}, Failures: {failure_count}.")
+    logger.info(
+        f"Parallel processing finished. Success: {success_count}, Failures: {failure_count}."
+    )
 
     if failure_count > 0:
         raise RuntimeError(f"{failure_count} file(s) failed to process.")
 
 
-import os
 import json
+import os
 from datetime import datetime
 
 
@@ -198,9 +228,7 @@ def _process_normalized_file(
     return True, f"Loaded {total_rows} rows into normalized schema."
 
 
-def _process_audit_file(
-    f, db_loader, file_path, file_hash, mode
-) -> Tuple[bool, str]:
+def _process_audit_file(f, db_loader, file_path, file_hash, mode) -> Tuple[bool, str]:
     """Helper to process a file for the 'audit' schema."""
     parsed_stream = parser.parse_icsr_xml_for_audit(f)
     buffer, count = transformer.transform_for_audit(parsed_stream)
@@ -217,7 +245,9 @@ def _process_audit_file(
 from lxml import etree
 
 
-def _quarantine_file(file_path: str, file_hash: str, settings: Settings, error: Exception):
+def _quarantine_file(
+    file_path: str, file_hash: str, settings: Settings, error: Exception
+):
     """Moves a failed file and its error metadata to the quarantine location."""
     if not settings.quarantine_uri:
         return
@@ -254,11 +284,17 @@ def _quarantine_file(file_path: str, file_hash: str, settings: Settings, error: 
         logger.info(f"Moved failed file to quarantine: {dest_path}")
 
     except Exception as q_exc:
-        logger.error(f"Could not move file to quarantine. Error: {q_exc}", exc_info=True)
+        logger.error(
+            f"Could not move file to quarantine. Error: {q_exc}", exc_info=True
+        )
 
 
 def process_file(
-    file_path: str, file_hash: str, settings: Settings, mode: str, validate: bool = False
+    file_path: str,
+    file_hash: str,
+    settings: Settings,
+    mode: str,
+    validate: bool = False,
 ) -> Tuple[bool, str]:
     """
     Processes a single file: opens, parses, transforms, and loads its data.
@@ -272,31 +308,37 @@ def process_file(
 
         # --- First Pass: Optional XSD Validation ---
         if validate:
-            if not settings.xsd_schema_path or not os.path.exists(settings.xsd_schema_path):
-                raise FileNotFoundError(f"XSD schema not found at path: {settings.xsd_schema_path}")
+            if not settings.xsd_schema_path or not os.path.exists(
+                settings.xsd_schema_path
+            ):
+                raise FileNotFoundError(
+                    f"XSD schema not found at path: {settings.xsd_schema_path}"
+                )
 
             logger.info(f"Performing XSD validation for {file_path}...")
-            try:
-                xmlschema_doc = etree.parse(settings.xsd_schema_path)
-                xmlschema = etree.XMLSchema(xmlschema_doc)
-                validating_parser = etree.XMLParser(schema=xmlschema)
+            # Use the dedicated, streaming validation function from the parser module
+            with fsspec.open(file_path, "rb") as f:
+                is_valid, errors = parser.validate_xml_with_xsd(
+                    f, settings.xsd_schema_path
+                )
 
-                # Stream the file and feed the parser to validate without storing the tree
-                with fsspec.open(file_path, "rb") as f:
-                    while chunk := f.read(16384):
-                        validating_parser.feed(chunk)
-                # Finalize validation by closing the parser. This is what triggers the error.
-                validating_parser.close()
+            if not is_valid:
+                error_message = f"XSD validation failed: {'; '.join(errors)}"
+                logger.error(f"{error_message} for file {file_path}")
+                # Create a synthetic exception to pass to the quarantine function
+                # to maintain a consistent interface for error logging.
+                validation_error = etree.XMLSyntaxError(error_message, 0, 0, 0, "")
+                _quarantine_file(file_path, file_hash, settings, validation_error)
+                return False, error_message
+            else:
                 logger.info(f"XSD validation successful for {file_path}.")
-            except etree.XMLSyntaxError as e:
-                logger.error(f"XSD validation failed for {file_path}: {e}")
-                _quarantine_file(file_path, file_hash, settings, e)
-                return False, f"XSD validation failed: {e}"
 
         # --- Second Pass: Parsing and Loading ---
         with fsspec.open(file_path, "rb") as f:
             if settings.schema_type == "normalized":
-                return _process_normalized_file(f, db_loader, file_path, file_hash, mode)
+                return _process_normalized_file(
+                    f, db_loader, file_path, file_hash, mode
+                )
             elif settings.schema_type == "audit":
                 return _process_audit_file(f, db_loader, file_path, file_hash, mode)
             else:

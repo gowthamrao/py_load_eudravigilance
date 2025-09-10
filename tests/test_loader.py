@@ -1,9 +1,9 @@
 import pytest
-from testcontainers.postgres import PostgresContainer
 import sqlalchemy
-from sqlalchemy import text
-
 from py_load_eudravigilance.loader import PostgresLoader
+from sqlalchemy import text
+from testcontainers.postgres import PostgresContainer
+
 
 @pytest.fixture(scope="module")
 def postgres_container():
@@ -11,12 +11,14 @@ def postgres_container():
     with PostgresContainer("postgres:13") as container:
         yield container
 
+
 @pytest.fixture(scope="module")
 def db_engine(postgres_container):
     """Pytest fixture to provide a SQLAlchemy engine for the container."""
     engine = sqlalchemy.create_engine(postgres_container.get_connection_url())
     yield engine
     engine.dispose()
+
 
 def test_create_all_tables(db_engine):
     """
@@ -43,9 +45,12 @@ def test_create_all_tables(db_engine):
 
     assert expected_tables.issubset(set(tables))
 
+
+import io
+
 from py_load_eudravigilance.parser import parse_icsr_xml
 from py_load_eudravigilance.transformer import transform_and_normalize
-import io
+
 
 def test_full_normalized_load(postgres_container, db_engine):
     """
@@ -60,9 +65,14 @@ def test_full_normalized_load(postgres_container, db_engine):
         xml_content = f.read()
 
     # Use only the first 3 unique records for the full load test
-    initial_xml = xml_content.split(b'</ichicsrMessage>')[0] + b'</ichicsrMessage>\n' + \
-                  xml_content.split(b'</ichicsrMessage>')[1] + b'</ichicsrMessage>\n' + \
-                  xml_content.split(b'</ichicsrMessage>')[2] + b'</ichicsrMessage>\n</ichicsr>'
+    initial_xml = (
+        xml_content.split(b"</ichicsrMessage>")[0]
+        + b"</ichicsrMessage>\n"
+        + xml_content.split(b"</ichicsrMessage>")[1]
+        + b"</ichicsrMessage>\n"
+        + xml_content.split(b"</ichicsrMessage>")[2]
+        + b"</ichicsrMessage>\n</ichicsr>"
+    )
 
     file_buffer = io.BytesIO(initial_xml)
     icsr_generator = parse_icsr_xml(file_buffer)
@@ -73,31 +83,41 @@ def test_full_normalized_load(postgres_container, db_engine):
     loader.load_normalized_data(
         buffers=buffers,
         row_counts=row_counts,
-        load_mode="full", # Use 'full' to test the TRUNCATE logic
+        load_mode="full",  # Use 'full' to test the TRUNCATE logic
         file_path="tests/sample_e2b.xml",
-        file_hash="dummy_hash_for_testing"
+        file_hash="dummy_hash_for_testing",
     )
 
     # 5. Assert: Verify data was loaded correctly
     with db_engine.connect() as connection:
         # The sample file contains 3 ICSRs
-        master_count = connection.execute(text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
+        master_count = connection.execute(
+            text("SELECT COUNT(*) FROM icsr_master")
+        ).scalar_one()
         assert master_count == 3
         # The first ICSR has 2 drugs
         drug_count = connection.execute(text("SELECT COUNT(*) FROM drugs")).scalar_one()
         assert drug_count == 2
         # The two drugs have a total of 3 substances
-        substance_count = connection.execute(text("SELECT COUNT(*) FROM drug_substances")).scalar_one()
+        substance_count = connection.execute(
+            text("SELECT COUNT(*) FROM drug_substances")
+        ).scalar_one()
         assert substance_count == 3
         # Only the first ICSR has a test
-        test_count = connection.execute(text("SELECT COUNT(*) FROM tests_procedures")).scalar_one()
+        test_count = connection.execute(
+            text("SELECT COUNT(*) FROM tests_procedures")
+        ).scalar_one()
         assert test_count == 1
         # Only the first ICSR has a narrative
-        narrative_count = connection.execute(text("SELECT COUNT(*) FROM case_summary_narrative")).scalar_one()
+        narrative_count = connection.execute(
+            text("SELECT COUNT(*) FROM case_summary_narrative")
+        ).scalar_one()
         assert narrative_count == 1
 
         # Verify the content of drug_substances
-        substances = connection.execute(text("SELECT * FROM drug_substances ORDER BY activesubstancename")).fetchall()
+        substances = connection.execute(
+            text("SELECT * FROM drug_substances ORDER BY activesubstancename")
+        ).fetchall()
         assert substances[0].activesubstancename == "SubstanceX"
         assert substances[0].drug_seq == 1
         assert substances[1].activesubstancename == "SubstanceY"
@@ -108,7 +128,7 @@ def test_full_normalized_load(postgres_container, db_engine):
 
 from py_load_eudravigilance.parser import parse_icsr_xml_for_audit
 from py_load_eudravigilance.transformer import transform_for_audit
-import json
+
 
 def test_delta_audit_load(postgres_container, db_engine):
     """
@@ -130,20 +150,26 @@ def test_delta_audit_load(postgres_container, db_engine):
     loader.load_audit_data(
         buffer=buffer,
         row_count=row_count,
-        load_mode="delta", # Test the staging/upsert path
+        load_mode="delta",  # Test the staging/upsert path
         file_path="tests/sample_e2b.xml",
-        file_hash="dummy_hash_for_audit_testing"
+        file_hash="dummy_hash_for_audit_testing",
     )
 
     # 4. Assert: Verify the data was loaded
     with db_engine.connect() as connection:
         # After de-duplication, there should be 4 unique ICSRs
-        audit_count = connection.execute(text("SELECT COUNT(*) FROM icsr_audit_log")).scalar_one()
+        audit_count = connection.execute(
+            text("SELECT COUNT(*) FROM icsr_audit_log")
+        ).scalar_one()
         assert audit_count == 4
 
         # Just check the first payload for validity
-        payload = connection.execute(text("SELECT icsr_payload FROM icsr_audit_log WHERE safetyreportid = 'TEST-CASE-001'")).scalar_one()
-        assert isinstance(payload, dict) # SQLAlchemy auto-deserializes JSONB to dict
+        payload = connection.execute(
+            text(
+                "SELECT icsr_payload FROM icsr_audit_log WHERE safetyreportid = 'TEST-CASE-001'"
+            )
+        ).scalar_one()
+        assert isinstance(payload, dict)  # SQLAlchemy auto-deserializes JSONB to dict
         assert "patient" in payload
         assert "test" in payload
         assert payload["test"]["testname"] == "Blood Pressure"
@@ -163,10 +189,14 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
         xml_content = f.read()
 
     # Create an initial version of the file without the nullification message
-    initial_xml = xml_content.split(b'</ichicsrMessage>')[0] + b'</ichicsrMessage>\n' + \
-                  xml_content.split(b'</ichicsrMessage>')[1] + b'</ichicsrMessage>\n' + \
-                  xml_content.split(b'</ichicsrMessage>')[2] + b'</ichicsrMessage>\n</ichicsr>'
-
+    initial_xml = (
+        xml_content.split(b"</ichicsrMessage>")[0]
+        + b"</ichicsrMessage>\n"
+        + xml_content.split(b"</ichicsrMessage>")[1]
+        + b"</ichicsrMessage>\n"
+        + xml_content.split(b"</ichicsrMessage>")[2]
+        + b"</ichicsrMessage>\n</ichicsr>"
+    )
 
     file_buffer_initial = io.BytesIO(initial_xml)
     icsr_generator_initial = parse_icsr_xml(file_buffer_initial)
@@ -180,14 +210,16 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
         row_counts=row_counts_initial,
         load_mode="full",
         file_path="tests/initial.xml",
-        file_hash="initial_hash"
+        file_hash="initial_hash",
     )
 
     # 3. Assert initial state
     with db_engine.connect() as connection:
-        case2_initial = connection.execute(text("SELECT * FROM icsr_master WHERE safetyreportid = 'TEST-CASE-002'")).first()
+        case2_initial = connection.execute(
+            text("SELECT * FROM icsr_master WHERE safetyreportid = 'TEST-CASE-002'")
+        ).first()
         assert case2_initial.is_nullified is False
-        assert case2_initial.receiptdate == '20240102'
+        assert case2_initial.receiptdate == "20240102"
 
     # 4. Delta Load: Create a new file with just the nullification message for TEST-CASE-002
     nullification_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -215,21 +247,26 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
         row_counts=row_counts_delta,
         load_mode="delta",
         file_path="tests/delta.xml",
-        file_hash="delta_hash"
+        file_hash="delta_hash",
     )
 
     # 5. Assert final state
     with db_engine.connect() as connection:
-        master_count = connection.execute(text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
-        assert master_count == 3 # Should not have added a new record
+        master_count = connection.execute(
+            text("SELECT COUNT(*) FROM icsr_master")
+        ).scalar_one()
+        assert master_count == 3  # Should not have added a new record
 
-        case2_final = connection.execute(text("SELECT * FROM icsr_master WHERE safetyreportid = 'TEST-CASE-002'")).first()
+        case2_final = connection.execute(
+            text("SELECT * FROM icsr_master WHERE safetyreportid = 'TEST-CASE-002'")
+        ).first()
         assert case2_final.is_nullified is True
         # The receiptdate should NOT have been updated, as per our logic for nullification
-        assert case2_final.receiptdate == '20240102'
+        assert case2_final.receiptdate == "20240102"
 
 
 from py_load_eudravigilance.loader import get_loader
+
 
 def test_get_loader_plugin_system():
     """
@@ -254,7 +291,9 @@ def test_get_loader_plugin_system():
     with pytest.raises(ValueError) as excinfo:
         get_loader(dsn_mysql)
     # Check that the error message is helpful
-    assert "No registered loader found for database dialect 'mysql'" in str(excinfo.value)
+    assert "No registered loader found for database dialect 'mysql'" in str(
+        excinfo.value
+    )
     assert "Available loaders: ['postgresql']" in str(excinfo.value)
 
     # 4. Test for an invalid DSN

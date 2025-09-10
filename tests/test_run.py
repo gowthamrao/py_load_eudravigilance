@@ -1,10 +1,11 @@
 import io
 import json
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 from py_load_eudravigilance import run as etl_run
-from py_load_eudravigilance.config import Settings, DatabaseConfig
+from py_load_eudravigilance.config import DatabaseConfig, Settings
+
 
 # Sample settings for use in tests
 @pytest.fixture
@@ -15,17 +16,22 @@ def mock_settings():
         schema_type="normalized",
     )
 
+
 def test_discover_files(mock_settings):
     """
     Tests that discover_files function calls fsspec.open_files correctly.
     """
     # fsspec.open_files returns objects with a .path attribute
-    mock_file_objects = [MagicMock(path="mock/path/file1.xml"), MagicMock(path="mock/path/file2.xml")]
+    mock_file_objects = [
+        MagicMock(path="mock/path/file1.xml"),
+        MagicMock(path="mock/path/file2.xml"),
+    ]
 
     with patch("fsspec.open_files", return_value=mock_file_objects) as mock_open_files:
         files = etl_run.discover_files(mock_settings.source_uri)
         mock_open_files.assert_called_once_with(mock_settings.source_uri)
         assert files == ["mock/path/file1.xml", "mock/path/file2.xml"]
+
 
 def test_filter_completed_files(mock_settings):
     """
@@ -47,9 +53,12 @@ def test_filter_completed_files(mock_settings):
             return "hash_of_file3"
         return "unknown_hash"
 
-    with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader_instance) as mock_get_loader, \
-         patch("py_load_eudravigilance.run._calculate_file_hash", side_effect=def_hash_side_effect) as mock_hash:
-
+    with patch(
+        "py_load_eudravigilance.loader.get_loader", return_value=mock_loader_instance
+    ) as mock_get_loader, patch(
+        "py_load_eudravigilance.run._calculate_file_hash",
+        side_effect=def_hash_side_effect,
+    ) as mock_hash:
         files_to_process = etl_run.filter_completed_files(input_files, mock_settings)
 
         # Assertions
@@ -67,6 +76,7 @@ def test_filter_completed_files(mock_settings):
         assert files_to_process["path/file1.xml"] == "hash_of_file1"
         assert files_to_process["path/file3.xml"] == "hash_of_file3"
 
+
 def test_process_file_normalized(mock_settings):
     """
     Tests the end-to-end logic for processing a single file in 'normalized' mode.
@@ -78,14 +88,25 @@ def test_process_file_normalized(mock_settings):
     # Mocks for all external dependencies
     mock_loader_instance = MagicMock()
     mock_parser_stream = iter([{"safetyreportid": "123"}])
-    mock_transformer_result = ({'icsr_master': io.StringIO("hdr\nval")}, {'icsr_master': 1}, [])
+    mock_transformer_result = (
+        {"icsr_master": io.StringIO("hdr\nval")},
+        {"icsr_master": 1},
+        [],
+    )
 
-    with patch("fsspec.open", MagicMock(return_value=io.BytesIO(mock_file_content))) as mock_fsspec_open, \
-         patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader_instance) as mock_get_loader, \
-         patch("py_load_eudravigilance.parser.parse_icsr_xml", return_value=mock_parser_stream) as mock_parser, \
-         patch("py_load_eudravigilance.transformer.transform_and_normalize", return_value=mock_transformer_result) as mock_transformer:
-
-        success, message = etl_run.process_file(file_path, file_hash, mock_settings, mode="delta")
+    with patch(
+        "fsspec.open", MagicMock(return_value=io.BytesIO(mock_file_content))
+    ) as mock_fsspec_open, patch(
+        "py_load_eudravigilance.loader.get_loader", return_value=mock_loader_instance
+    ) as mock_get_loader, patch(
+        "py_load_eudravigilance.parser.parse_icsr_xml", return_value=mock_parser_stream
+    ) as mock_parser, patch(
+        "py_load_eudravigilance.transformer.transform_and_normalize",
+        return_value=mock_transformer_result,
+    ) as mock_transformer:
+        success, message = etl_run.process_file(
+            file_path, file_hash, mock_settings, mode="delta"
+        )
 
         # Assertions
         mock_get_loader.assert_called_once_with(mock_settings.database.dsn)
@@ -98,16 +119,19 @@ def test_process_file_normalized(mock_settings):
             row_counts=mock_transformer_result[1],
             load_mode="delta",
             file_path=file_path,
-            file_hash=file_hash
+            file_hash=file_hash,
         )
 
         assert success is True
         assert "Loaded 1 rows" in message
 
+
 @patch("py_load_eudravigilance.run.discover_files")
 @patch("py_load_eudravigilance.run.filter_completed_files")
 @patch("py_load_eudravigilance.run.process_files_parallel")
-def test_run_etl_orchestration(mock_process_parallel, mock_filter, mock_discover, mock_settings):
+def test_run_etl_orchestration(
+    mock_process_parallel, mock_filter, mock_discover, mock_settings
+):
     """
     Tests that the main run_etl function correctly orchestrates the calls.
     """
@@ -122,6 +146,7 @@ def test_run_etl_orchestration(mock_process_parallel, mock_filter, mock_discover
         {"file1.xml": "hash1"}, mock_settings, "delta", 4, False
     )
 
+
 @patch("py_load_eudravigilance.run.discover_files")
 @patch("py_load_eudravigilance.run.filter_completed_files")
 def test_run_etl_no_files_to_process(mock_filter, mock_discover, mock_settings):
@@ -129,9 +154,11 @@ def test_run_etl_no_files_to_process(mock_filter, mock_discover, mock_settings):
     Tests that parallel processing is not called if there are no new files.
     """
     mock_discover.return_value = ["file1.xml"]
-    mock_filter.return_value = {} # No new files
+    mock_filter.return_value = {}  # No new files
 
-    with patch("py_load_eudravigilance.run.process_files_parallel") as mock_process_parallel:
+    with patch(
+        "py_load_eudravigilance.run.process_files_parallel"
+    ) as mock_process_parallel:
         etl_run.run_etl(mock_settings, mode="delta")
         mock_process_parallel.assert_not_called()
 
@@ -157,9 +184,12 @@ def test_process_file_quarantine_on_failure(mock_settings, tmp_path):
     mock_loader_instance = MagicMock()
     processing_error = ValueError("Simulated processing error")
 
-    with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader_instance), \
-         patch("py_load_eudravigilance.run._process_normalized_file", side_effect=processing_error):
-
+    with patch(
+        "py_load_eudravigilance.loader.get_loader", return_value=mock_loader_instance
+    ), patch(
+        "py_load_eudravigilance.run._process_normalized_file",
+        side_effect=processing_error,
+    ):
         # 4. Execute the function
         success, message = etl_run.process_file(
             str(source_file), "fail_hash", mock_settings, "delta"
@@ -202,14 +232,16 @@ def test_process_file_with_xsd_validation(tmp_path):
 
     # Create test XSD
     xsd_path = schema_dir / "test.xsd"
-    xsd_path.write_text("""\
+    xsd_path.write_text(
+        """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
   <xs:element name="ichicsrMessage">
     <xs:complexType><xs:sequence>
       <xs:element name="safetyreportid" type="xs:string"/>
     </xs:sequence></xs:complexType>
   </xs:element>
-</xs:schema>""")
+</xs:schema>"""
+    )
 
     # Mock settings
     settings = Settings(
@@ -217,19 +249,30 @@ def test_process_file_with_xsd_validation(tmp_path):
         source_uri=str(source_dir / "*.xml"),
         schema_type="normalized",
         quarantine_uri=str(quarantine_dir),
-        xsd_schema_path=str(xsd_path)
+        xsd_schema_path=str(xsd_path),
     )
     mock_loader = MagicMock()
-    mock_transformer_result = ({'icsr_master': io.StringIO("hdr\nval")}, {'icsr_master': 1}, [])
+    mock_transformer_result = (
+        {"icsr_master": io.StringIO("hdr\nval")},
+        {"icsr_master": 1},
+        [],
+    )
 
     # 2. --- Test Case: Validation enabled, valid file is processed ---
     valid_file = source_dir / "valid.xml"
-    valid_file.write_text('<ichicsrMessage><safetyreportid>valid</safetyreportid></ichicsrMessage>')
+    valid_file.write_text(
+        "<ichicsrMessage><safetyreportid>valid</safetyreportid></ichicsrMessage>"
+    )
 
-    with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader), \
-         patch("py_load_eudravigilance.transformer.transform_and_normalize", return_value=mock_transformer_result):
-
-        success, msg = etl_run.process_file(str(valid_file), "hash1", settings, "delta", validate=True)
+    with patch(
+        "py_load_eudravigilance.loader.get_loader", return_value=mock_loader
+    ), patch(
+        "py_load_eudravigilance.transformer.transform_and_normalize",
+        return_value=mock_transformer_result,
+    ):
+        success, msg = etl_run.process_file(
+            str(valid_file), "hash1", settings, "delta", validate=True
+        )
 
         assert success is True
         mock_loader.load_normalized_data.assert_called_once()
@@ -238,10 +281,14 @@ def test_process_file_with_xsd_validation(tmp_path):
     # 3. --- Test Case: Validation enabled, invalid file is quarantined ---
     mock_loader.reset_mock()
     invalid_file = source_dir / "invalid.xml"
-    invalid_file.write_text('<ichicsrMessage><wrongtag>invalid</wrongtag></ichicsrMessage>')
+    invalid_file.write_text(
+        "<ichicsrMessage><wrongtag>invalid</wrongtag></ichicsrMessage>"
+    )
 
     with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader):
-        success, msg = etl_run.process_file(str(invalid_file), "hash2", settings, "delta", validate=True)
+        success, msg = etl_run.process_file(
+            str(invalid_file), "hash2", settings, "delta", validate=True
+        )
 
         assert success is False
         assert "XSD validation failed" in msg
@@ -256,12 +303,19 @@ def test_process_file_with_xsd_validation(tmp_path):
     mock_loader.reset_mock()
     # Recreate the invalid file in the source directory
     invalid_file_path = source_dir / "invalid.xml"
-    invalid_file_path.write_text('<ichicsrMessage><wrongtag>invalid</wrongtag></ichicsrMessage>')
+    invalid_file_path.write_text(
+        "<ichicsrMessage><wrongtag>invalid</wrongtag></ichicsrMessage>"
+    )
 
-    with patch("py_load_eudravigilance.loader.get_loader", return_value=mock_loader), \
-         patch("py_load_eudravigilance.transformer.transform_and_normalize", return_value=mock_transformer_result):
-
-        success, msg = etl_run.process_file(str(invalid_file_path), "hash3", settings, "delta", validate=False)
+    with patch(
+        "py_load_eudravigilance.loader.get_loader", return_value=mock_loader
+    ), patch(
+        "py_load_eudravigilance.transformer.transform_and_normalize",
+        return_value=mock_transformer_result,
+    ):
+        success, msg = etl_run.process_file(
+            str(invalid_file_path), "hash3", settings, "delta", validate=False
+        )
 
         assert success is True
         mock_loader.load_normalized_data.assert_called_once()

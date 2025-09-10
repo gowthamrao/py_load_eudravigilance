@@ -1,24 +1,24 @@
 import os
-import yaml
-import pytest
 from pathlib import Path
-from pydantic import ValidationError
-from py_load_eudravigilance.config import load_config, Settings
+
+import pytest
+import yaml
+from py_load_eudravigilance.config import Settings, load_config
+
 
 @pytest.fixture
 def config_file(tmp_path: Path) -> Path:
     """Creates a dummy config.yaml file for testing."""
     config_content = {
-        "database": {
-            "dsn": "dsn_from_file"
-        },
+        "database": {"dsn": "dsn_from_file"},
         "source_uri": "uri_from_file",
-        "schema_type": "audit"
+        "schema_type": "audit",
     }
     config_path = tmp_path / "config.yaml"
     with open(config_path, "w") as f:
         yaml.dump(config_content, f)
     return config_path
+
 
 def test_load_from_yaml_file(config_file: Path):
     """
@@ -30,6 +30,7 @@ def test_load_from_yaml_file(config_file: Path):
     assert settings.database.dsn == "dsn_from_file"
     assert settings.source_uri == "uri_from_file"
     assert settings.schema_type == "audit"
+
 
 def test_env_vars_override_yaml(config_file: Path, monkeypatch):
     """
@@ -48,6 +49,7 @@ def test_env_vars_override_yaml(config_file: Path, monkeypatch):
     assert settings.source_uri == "uri_from_env"
     # This value was not overridden, so it should come from the file
     assert settings.schema_type == "audit"
+
 
 def test_load_from_env_only(monkeypatch):
     """
@@ -68,6 +70,7 @@ def test_load_from_env_only(monkeypatch):
     # This was set in the environment
     assert settings.schema_type == "audit"
 
+
 def test_missing_required_field_raises_error(tmp_path: Path, monkeypatch):
     """
     Tests that a validation error is raised if a required field (like DSN)
@@ -82,6 +85,7 @@ def test_missing_required_field_raises_error(tmp_path: Path, monkeypatch):
 
     with pytest.raises(ValueError, match="Configuration validation error"):
         load_config(path=str(empty_config))
+
 
 def test_invalid_schema_type_raises_error(config_file: Path, monkeypatch):
     """

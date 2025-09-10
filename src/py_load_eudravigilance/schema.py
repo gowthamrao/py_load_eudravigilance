@@ -142,9 +142,7 @@ etl_file_history = sqlalchemy.Table(
     metadata,
     sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
     sqlalchemy.Column("filename", sqlalchemy.String(255), nullable=False),
-    sqlalchemy.Column(
-        "file_hash", sqlalchemy.String(64), nullable=False, unique=True
-    ),
+    sqlalchemy.Column("file_hash", sqlalchemy.String(64), nullable=False, unique=True),
     sqlalchemy.Column("status", sqlalchemy.String(50), nullable=False),
     sqlalchemy.Column(
         "load_timestamp",

@@ -4,7 +4,7 @@ Handles the Extraction phase of the ETL process.
 This module is responsible for finding, parsing, and validating
 EudraVigilance ICSR XML files from various sources.
 """
-from typing import Any, Dict, Generator, IO
+from typing import IO, Any, Dict, Generator
 
 from lxml import etree
 
@@ -213,7 +213,7 @@ def _element_to_dict(elem) -> Dict[str, Any]:
         if not child_dict:  # Skip empty dicts from comments
             continue
 
-        child_tag = next(iter(child_dict)) # Get the single key from the returned dict
+        child_tag = next(iter(child_dict))  # Get the single key from the returned dict
 
         # If the tag already exists, turn it into a list
         if child_tag in children:
@@ -226,10 +226,12 @@ def _element_to_dict(elem) -> Dict[str, Any]:
     return {tag: children}
 
 
-from typing import Tuple, List
+from typing import List, Tuple
 
 
-def validate_xml_with_xsd(xml_source: IO[bytes], xsd_path: str) -> Tuple[bool, List[str]]:
+def validate_xml_with_xsd(
+    xml_source: IO[bytes], xsd_path: str
+) -> Tuple[bool, List[str]]:
     """
     Validates an XML source against a given XSD schema file using a streaming
     parser to ensure low memory usage.

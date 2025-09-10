@@ -1,12 +1,14 @@
+from pathlib import Path
+
 import pytest
 import sqlalchemy
-from testcontainers.postgres import PostgresContainer
-from pathlib import Path
-from py_load_eudravigilance.config import Settings, DatabaseConfig
+from py_load_eudravigilance.config import DatabaseConfig, Settings
 from py_load_eudravigilance.run import run_etl
+from testcontainers.postgres import PostgresContainer
 
 # Define the path to the test data directory
 TEST_DATA_DIR = Path(__file__).parent / "data"
+
 
 @pytest.fixture(scope="function")
 def db_container():
@@ -16,16 +18,18 @@ def db_container():
         # and automatically stopped/cleaned up on exit.
         yield container
 
+
 @pytest.fixture(scope="function")
 def test_settings(db_container: PostgresContainer) -> Settings:
     """A fixture to create a Settings object configured to use the test database."""
     dsn = db_container.get_connection_url()
     return Settings(
-        source_uri="", # Will be set by each test
+        source_uri="",  # Will be set by each test
         schema_type="normalized",
         database=DatabaseConfig(dsn=dsn),
-        quarantine_uri=None, # Not testing quarantine in this suite
+        quarantine_uri=None,  # Not testing quarantine in this suite
     )
+
 
 def run_single_file_etl(settings: Settings, xml_filename: str):
     """Helper function to run the main ETL process on a single test file."""
@@ -34,19 +38,26 @@ def run_single_file_etl(settings: Settings, xml_filename: str):
 
     # Initialize the database schema for the test
     from py_load_eudravigilance.loader import get_loader
+
     loader = get_loader(settings.database.dsn)
     loader.create_all_tables()
 
     # Run the ETL in delta mode
     run_etl(settings=settings, mode="delta", max_workers=1)
 
-def get_icsr_master_row(engine: sqlalchemy.engine.Engine, report_id: str) -> dict | None:
+
+def get_icsr_master_row(
+    engine: sqlalchemy.engine.Engine, report_id: str
+) -> dict | None:
     """Helper function to fetch a specific row from the icsr_master table."""
     with engine.connect() as conn:
         result = conn.execute(
-            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+            sqlalchemy.text(
+                f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
         ).first()
         return result._asdict() if result else None
+
 
 def test_initial_insert(db_container: PostgresContainer, test_settings: Settings):
     """
@@ -116,7 +127,9 @@ def test_nullification(db_container: PostgresContainer, test_settings: Settings)
     assert row["senderidentifier"] == "SENDER-ID-UPDATED"
 
 
-def test_stale_amendment_is_ignored(db_container: PostgresContainer, test_settings: Settings):
+def test_stale_amendment_is_ignored(
+    db_container: PostgresContainer, test_settings: Settings
+):
     """
     Tests that processing an amendment with an older or same version date
     does NOT update the existing record.
@@ -138,7 +151,9 @@ def test_stale_amendment_is_ignored(db_container: PostgresContainer, test_settin
     assert row["senderidentifier"] == "SENDER-ID-UPDATED"
 
 
-def test_idempotency_and_reprocessing(db_container: PostgresContainer, test_settings: Settings):
+def test_idempotency_and_reprocessing(
+    db_container: PostgresContainer, test_settings: Settings
+):
     """
     Tests that reprocessing the same files does not change the database state
     and that an older version cannot overwrite a newer nullification.
@@ -149,9 +164,9 @@ def test_idempotency_and_reprocessing(db_container: PostgresContainer, test_sett
     report_id = "TEST-SCENARIO-01"
 
     # Act & Assert Phase 1: Run the full sequence
-    run_single_file_etl(test_settings, "test_insert.xml") # version 20250101
-    run_single_file_etl(test_settings, "test_amendment.xml") # version 20250102
-    run_single_file_etl(test_settings, "test_nullification.xml") # version 20250103
+    run_single_file_etl(test_settings, "test_insert.xml")  # version 20250101
+    run_single_file_etl(test_settings, "test_amendment.xml")  # version 20250102
+    run_single_file_etl(test_settings, "test_nullification.xml")  # version 20250103
 
     # Assert state after nullification
     row_after_null = get_icsr_master_row(engine, report_id)

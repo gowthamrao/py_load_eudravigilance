@@ -13,16 +13,14 @@ import fsspec
 import typer
 from typing_extensions import Annotated
 
-from .config import load_config, CONFIG_FILE_NAME
+from . import run as etl_run
+from . import schema as db_schema
+from .config import CONFIG_FILE_NAME, load_config
 from .loader import get_loader
 from .parser import validate_xml_with_xsd
-from . import schema as db_schema
-from . import run as etl_run
 
 # Create a Typer application instance
-app = typer.Typer(
-    help="A high-performance ETL tool for EudraVigilance ICSR XML files."
-)
+app = typer.Typer(help="A high-performance ETL tool for EudraVigilance ICSR XML files.")
 
 
 @app.command()
@@ -49,10 +47,9 @@ def run(
     ] = False,
     workers: Annotated[
         int,
-        typer.Option(
-            help="Number of parallel worker processes to use."
-        ),
-    ] = os.cpu_count() or 1,
+        typer.Option(help="Number of parallel worker processes to use."),
+    ] = os.cpu_count()
+    or 1,
     config_file: Annotated[
         Path,
         typer.Option(
@@ -75,29 +72,39 @@ def run(
         settings = load_config(path=str(config_file))
     except (ValueError, FileNotFoundError) as e:
         typer.secho(f"Configuration Error: {e}", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
     # Override config with CLI arguments if provided
     if source_uri:
         settings.source_uri = source_uri
 
     if not settings.source_uri:
-        typer.secho("Error: A source URI must be provided via argument or in the config file.", fg=typer.colors.RED)
+        typer.secho(
+            "Error: A source URI must be provided via argument or in the config file.",
+            fg=typer.colors.RED,
+        )
         raise typer.Exit(code=1)
 
     if validate and not settings.xsd_schema_path:
-        typer.secho("Error: --validate flag requires 'xsd_schema_path' to be set in the config file.", fg=typer.colors.RED)
+        typer.secho(
+            "Error: --validate flag requires 'xsd_schema_path' to be set in the config file.",
+            fg=typer.colors.RED,
+        )
         raise typer.Exit(code=1)
 
-    typer.echo(f"Starting ETL process (mode: {mode}, workers: {workers}, validate: {validate})")
+    typer.echo(
+        f"Starting ETL process (mode: {mode}, workers: {workers}, validate: {validate})"
+    )
 
     # 2. Call the main ETL orchestration function
     try:
         etl_run.run_etl(settings, mode=mode, max_workers=workers, validate=validate)
         typer.secho("\nETL process completed successfully.", fg=typer.colors.GREEN)
     except Exception as e:
-        typer.secho(f"\nAn error occurred during the ETL process: {e}", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+        typer.secho(
+            f"\nAn error occurred during the ETL process: {e}", fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1) from e
 
 
 @app.command()
@@ -131,7 +138,7 @@ def init_db(
         )
     except Exception as e:
         typer.secho(f"Database initialization failed: {e}", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
 
 @app.command()
@@ -169,7 +176,7 @@ def validate(
             raise typer.Exit()
     except Exception as e:
         typer.secho(f"Error accessing source files: {e}", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
 
     valid_count = 0
     invalid_count = 0
@@ -233,10 +240,12 @@ def validate_db_schema(
         # ValueError is raised by our validation logic on failure
         typer.secho("Schema Validation Failed:", fg=typer.colors.RED)
         typer.secho(str(e), fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from e
     except Exception as e:
-        typer.secho(f"An unexpected error occurred during validation: {e}", fg=typer.colors.RED)
-        raise typer.Exit(code=1)
+        typer.secho(
+            f"An unexpected error occurred during validation: {e}", fg=typer.colors.RED
+        )
+        raise typer.Exit(code=1) from e
 
 
 if __name__ == "__main__":

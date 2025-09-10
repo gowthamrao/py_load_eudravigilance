@@ -22,7 +22,8 @@ def postgres_container():
             yield postgres
     except Exception as e:
         pytest.skip(
-            f"Skipping integration tests: Docker not available or failed to start. Error: {e}"
+            "Skipping integration tests: Docker not available or failed to start. "
+            f"Error: {e}"
         )
 
 
@@ -108,13 +109,14 @@ def test_cli_integration_flow(postgres_container, db_engine, tmp_path):
             conn.execute(text("SELECT COUNT(*) FROM drug_substances")).scalar_one() == 3
         )
 
-        # Spot check a value from the drug_substances table
-        substance_name = conn.execute(
+        # Spot check values from the drug_substances table
+        substances = conn.execute(
             text(
-                "SELECT activesubstancename FROM drug_substances WHERE drug_seq = 2 ORDER BY activesubstancename"
+                "SELECT activesubstancename FROM drug_substances "
+                "WHERE drug_seq = 2 ORDER BY activesubstancename"
             )
-        ).first()[0]
-        assert substance_name == "SubstanceY"
+        ).fetchall()
+        assert [row[0] for row in substances] == ["SubstanceY", "SubstanceZ"]
 
         # Check history
         history_count = conn.execute(
@@ -248,9 +250,15 @@ def test_cli_run_with_validation(postgres_container, db_engine, tmp_path):
     # Simple XSD for validation
     schema_path.write_text(
         """<?xml version="1.0" encoding="UTF-8"?>
-<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:hl7-org:v3" xmlns="urn:hl7-org:v3" elementFormDefault="qualified">
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:hl7-org:v3" xmlns="urn:hl7-org:v3"
+           elementFormDefault="qualified">
   <xs:element name="ichicsrMessage">
-    <xs:complexType><xs:sequence><xs:element name="safetyreport"/></xs:sequence></xs:complexType>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="safetyreport"/>
+      </xs:sequence>
+    </xs:complexType>
   </xs:element>
 </xs:schema>"""
     )

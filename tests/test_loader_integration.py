@@ -26,7 +26,7 @@ def test_connection(loader):
 def test_create_and_load_data(loader):
     # 1. Create a test table
     metadata = sqlalchemy.MetaData()
-    test_table = sqlalchemy.Table(
+    sqlalchemy.Table(
         "test_data",
         metadata,
         sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True),
@@ -59,7 +59,7 @@ def test_dynamic_upsert(loader):
     # 1. Define a table with a composite PK and a version key comment
     metadata = sqlalchemy.MetaData()
     table_name = "upsert_test_table"
-    test_table = sqlalchemy.Table(
+    sqlalchemy.Table(
         table_name,
         metadata,
         sqlalchemy.Column("pk1", sqlalchemy.Integer, primary_key=True),
@@ -70,6 +70,7 @@ def test_dynamic_upsert(loader):
     metadata.create_all(loader.engine)
 
     # 2. Pre-populate the table with initial data
+    test_table = metadata.tables[table_name]
     with loader.engine.begin() as conn:
         conn.execute(
             test_table.insert(),
@@ -108,6 +109,7 @@ def test_dynamic_upsert(loader):
         )
 
     # 5. Verify the final state of the table
+    test_table = metadata.tables[table_name]
     with loader.engine.connect() as connection:
         result = connection.execute(
             sqlalchemy.select(test_table).order_by("pk1", "pk2")
@@ -376,7 +378,8 @@ def test_drugs_table_loading(loader):
     with loader.engine.connect() as conn:
         result = conn.execute(
             sqlalchemy.text(
-                f"SELECT * FROM drugs WHERE safetyreportid = '{report_id}' ORDER BY drug_seq"
+                f"SELECT * FROM drugs WHERE safetyreportid = '{report_id}' "
+                "ORDER BY drug_seq"
             )
         ).fetchall()
 

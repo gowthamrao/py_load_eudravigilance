@@ -4,7 +4,7 @@ Handles the Extraction phase of the ETL process.
 This module is responsible for finding, parsing, and validating
 EudraVigilance ICSR XML files from various sources.
 """
-from typing import IO, Any, Dict, Generator
+from typing import IO, Any, Dict, Generator, List, Tuple
 
 from lxml import etree
 
@@ -25,45 +25,86 @@ class InvalidICSRError(Exception):
         return f"{self.message} (Partial Data: {self.partial_data})"
 
 
+def _find_text(start_element, xpath, default=None):
+    found_elem = start_element.find(xpath, namespaces=NAMESPACES)
+    return found_elem.text if found_elem is not None else default
+
+
+def _parse_patient(report_elem):
+    patient_elem = report_elem.find("hl7:patient", namespaces=NAMESPACES)
+    if patient_elem is None:
+        return {}
+    return {
+        "patientinitials": _find_text(patient_elem, "hl7:patientinitials"),
+        "patientonsetage": _find_text(patient_elem, "hl7:patientonsetage"),
+        "patientsex": _find_text(patient_elem, "hl7:patientsex"),
+    }
+
+
+def _parse_reactions(report_elem):
+    return [
+        {
+            "primarysourcereaction": _find_text(r, "hl7:primarysourcereaction"),
+            "reactionmeddrapt": _find_text(r, "hl7:reactionmeddrapt"),
+        }
+        for r in report_elem.findall("hl7:reaction", namespaces=NAMESPACES)
+    ]
+
+
+def _parse_drugs(report_elem):
+    drugs_list = []
+    for drug_elem in report_elem.findall("hl7:drug", namespaces=NAMESPACES):
+        substances_list = [
+            {"activesubstancename": _find_text(s, "hl7:activesubstancename")}
+            for s in drug_elem.findall("hl7:activesubstance", namespaces=NAMESPACES)
+        ]
+        drugs_list.append(
+            {
+                "drugcharacterization": _find_text(
+                    drug_elem, "hl7:drugcharacterization"
+                ),
+                "medicinalproduct": _find_text(drug_elem, "hl7:medicinalproduct"),
+                "drugstructuredosagenumb": _find_text(
+                    drug_elem, "hl7:drugstructuredosagenumb"
+                ),
+                "drugstructuredosageunit": _find_text(
+                    drug_elem, "hl7:drugstructuredosageunit"
+                ),
+                "drugdosagetext": _find_text(drug_elem, "hl7:drugdosagetext"),
+                "substances": substances_list,
+            }
+        )
+    return drugs_list
+
+
+def _parse_tests(report_elem):
+    return [
+        {
+            "testdate": _find_text(t, "hl7:testdate"),
+            "testname": _find_text(t, "hl7:testname"),
+            "testresult": _find_text(t, "hl7:testresult"),
+            "testresultunit": _find_text(t, "hl7:testresultunit"),
+            "testcomments": _find_text(t, "hl7:testcomments"),
+        }
+        for t in report_elem.findall("hl7:test", namespaces=NAMESPACES)
+    ]
+
+
 def parse_icsr_xml(
     xml_source: IO[bytes],
 ) -> Generator[Dict[str, Any] | InvalidICSRError, None, None]:
-    """
-    Parses an ICH E2B(R3) XML file and yields individual ICSRs.
-
-    This function uses an iterative parsing approach (iterparse) to handle
-    very large XML files with minimal memory usage, as required by the FRD.
-    It identifies and processes each 'ichicsrMessage' element. If an ICSR
-    is invalid (e.g., missing a required field), it yields an
-    InvalidICSRError instead of the data dictionary.
-
-    Args:
-        xml_source: A file-like object opened in bytes mode containing the XML data.
-
-    Yields:
-        A dictionary for each successfully parsed ICSR, or an InvalidICSRError
-        for each record that fails validation.
-    """
     context = etree.iterparse(
         xml_source, events=("end",), tag=f"{{{NAMESPACES['hl7']}}}ichicsrMessage"
     )
 
     for _, elem in context:
         try:
-            # Helper function to safely find an element and return its text content.
-            def _find_text(start_element, xpath, default=None):
-                found_elem = start_element.find(xpath, namespaces=NAMESPACES)
-                return found_elem.text if found_elem is not None else default
-
-            # All data is within the <safetyreport> tag.
             report_elem = elem.find("hl7:safetyreport", namespaces=NAMESPACES)
             if report_elem is None:
                 raise InvalidICSRError("Missing required element: safetyreport")
 
-            # C.1.1: Safety Report Unique Identifier is mandatory
             safety_report_id = _find_text(report_elem, ".//hl7:safetyreportid")
             if not safety_report_id:
-                # Try to get some identifying info for the error message
                 partial_data = {
                     "senderidentifier": _find_text(
                         elem, ".//hl7:messagesenderidentifier"
@@ -71,119 +112,53 @@ def parse_icsr_xml(
                     "messagedate": _find_text(elem, ".//hl7:messagedate"),
                 }
                 raise InvalidICSRError(
-                    "Missing required field: safetyreportid", partial_data=partial_data
+                    "Missing required field: safetyreportid",
+                    partial_data=partial_data,
                 )
 
-            # A.1.1: Sender Identifier
-            sender_id = _find_text(elem, ".//hl7:messagesenderidentifier")
-            # A.1.2: Receiver Identifier
-            receiver_id = _find_text(elem, ".//hl7:messagereceiveridentifier")
-            # C.1.4: Date of Receipt
-            receipt_date = _find_text(report_elem, ".//hl7:receiptdate")
-            # C.1.5: Date of Most Recent Information (the true version key)
-            date_of_most_recent_info = _find_text(
-                report_elem, ".//hl7:dateofmostrecentinformation"
-            )
-            # C.1.11: Nullification
             nullification_text = _find_text(report_elem, ".//hl7:reportnullification")
-            is_nullified = nullification_text and nullification_text.lower() == "true"
-            # C.2.r: Primary Source(s)
             primary_source_elem = report_elem.find(
                 "hl7:primarysource", namespaces=NAMESPACES
             )
-            reporter_country = None
-            qualification = None
+            reporter_country, qualification = None, None
             if primary_source_elem is not None:
                 reporter_country = _find_text(
                     primary_source_elem, "hl7:reportercountry"
                 )
                 qualification = _find_text(primary_source_elem, "hl7:qualification")
 
-            # D: Patient Characteristics
-            patient_elem = report_elem.find("hl7:patient", namespaces=NAMESPACES)
-            patient_initials, patient_age, patient_sex = None, None, None
-            if patient_elem is not None:
-                patient_initials = _find_text(patient_elem, "hl7:patientinitials")
-                patient_age = _find_text(patient_elem, "hl7:patientonsetage")
-                patient_sex = _find_text(patient_elem, "hl7:patientsex")
-
-            # E.i: Reaction(s) / Event(s)
-            reactions_list = [
-                {
-                    "primarysourcereaction": _find_text(r, "hl7:primarysourcereaction"),
-                    "reactionmeddrapt": _find_text(r, "hl7:reactionmeddrapt"),
-                }
-                for r in report_elem.findall("hl7:reaction", namespaces=NAMESPACES)
-            ]
-
-            # G.k: Drug(s)
-            drugs_list = []
-            for drug_elem in report_elem.findall("hl7:drug", namespaces=NAMESPACES):
-                substances_list = [
-                    {"activesubstancename": _find_text(s, "hl7:activesubstancename")}
-                    for s in drug_elem.findall(
-                        "hl7:activesubstance", namespaces=NAMESPACES
-                    )
-                ]
-                drugs_list.append(
-                    {
-                        "drugcharacterization": _find_text(
-                            drug_elem, "hl7:drugcharacterization"
-                        ),
-                        "medicinalproduct": _find_text(
-                            drug_elem, "hl7:medicinalproduct"
-                        ),
-                        "drugstructuredosagenumb": _find_text(
-                            drug_elem, "hl7:drugstructuredosagenumb"
-                        ),
-                        "drugstructuredosageunit": _find_text(
-                            drug_elem, "hl7:drugstructuredosageunit"
-                        ),
-                        "drugdosagetext": _find_text(drug_elem, "hl7:drugdosagetext"),
-                        "substances": substances_list,
-                    }
-                )
-
-            # F.r: Results of Tests and Procedures
-            tests_list = [
-                {
-                    "testdate": _find_text(t, "hl7:testdate"),
-                    "testname": _find_text(t, "hl7:testname"),
-                    "testresult": _find_text(t, "hl7:testresult"),
-                    "testresultunit": _find_text(t, "hl7:testresultunit"),
-                    "testcomments": _find_text(t, "hl7:testcomments"),
-                }
-                for t in report_elem.findall("hl7:test", namespaces=NAMESPACES)
-            ]
-
-            # H.1: Case Narrative
-            narrative = _find_text(report_elem, "hl7:narrativeincludeclinical")
-
-            yield {
-                "senderidentifier": sender_id,
-                "receiveridentifier": receiver_id,
+            data = {
+                "senderidentifier": _find_text(elem, ".//hl7:messagesenderidentifier"),
+                "receiveridentifier": _find_text(
+                    elem, ".//hl7:messagereceiveridentifier"
+                ),
                 "safetyreportid": safety_report_id,
-                "receiptdate": receipt_date,
-                "date_of_most_recent_info": date_of_most_recent_info,
-                "is_nullified": is_nullified,
+                "receiptdate": _find_text(report_elem, ".//hl7:receiptdate"),
+                "date_of_most_recent_info": _find_text(
+                    report_elem,
+                    ".//hl7:dateofmostrecentinformation",
+                ),
+                "is_nullified": (
+                    nullification_text and nullification_text.lower() == "true"
+                ),
                 "reportercountry": reporter_country,
                 "qualification": qualification,
-                "patientinitials": patient_initials,
-                "patientonsetage": patient_age,
-                "patientsex": patient_sex,
-                "reactions": reactions_list,
-                "drugs": drugs_list,
-                "tests": tests_list,
-                "narrative": narrative,
+                "narrative": _find_text(report_elem, "hl7:narrativeincludeclinical"),
+                "patientinitials": None,
+                "patientonsetage": None,
+                "patientsex": None,
+                **_parse_patient(report_elem),
+                "reactions": _parse_reactions(report_elem),
+                "drugs": _parse_drugs(report_elem),
+                "tests": _parse_tests(report_elem),
             }
+            yield data
 
         except InvalidICSRError as e:
-            yield e  # Yield the specific validation error
+            yield e
         except Exception as e:
-            # Yield a generic error for any other unexpected issue
             yield InvalidICSRError(f"Unexpected parsing error: {e}")
         finally:
-            # Crucial for memory efficiency: clear the element from memory.
             elem.clear()
             while elem.getprevious() is not None:
                 del elem.getparent()[0]
@@ -224,9 +199,6 @@ def _element_to_dict(elem) -> Dict[str, Any]:
             children[child_tag] = child_dict[child_tag]
 
     return {tag: children}
-
-
-from typing import List, Tuple
 
 
 def validate_xml_with_xsd(

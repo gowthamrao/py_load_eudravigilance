@@ -4,8 +4,18 @@ This module contains the main orchestration logic for the ETL process.
 It handles file discovery, parallel processing, and the overall workflow,
 separating these concerns from the CLI interface.
 """
+import concurrent.futures
+import hashlib
+import json
 import logging
+import os
+from datetime import datetime
+from typing import Tuple
 
+import fsspec
+from lxml import etree
+
+from . import loader, parser, transformer
 from .config import Settings
 
 # Configure logging
@@ -66,13 +76,6 @@ def run_etl(
     logger.info("ETL process finished.")
 
 
-import hashlib
-
-import fsspec
-
-from . import loader
-
-
 def _calculate_file_hash(file_path: str) -> str:
     """Calculates the SHA-256 hash of a file's content."""
     hasher = hashlib.sha256()
@@ -122,7 +125,8 @@ def filter_completed_files(files: list[str], settings: Settings) -> dict[str, st
         logger.info(f"Found {len(completed_hashes)} completed files in the database.")
     except Exception as e:
         logger.error(
-            f"Could not connect to the database to get completed files. Aborting. Error: {e}"
+            "Could not connect to the database to get completed files. "
+            f"Aborting. Error: {e}"
         )
         return {}
 
@@ -135,7 +139,8 @@ def filter_completed_files(files: list[str], settings: Settings) -> dict[str, st
                 files_to_process[file_path] = file_hash
             else:
                 logger.info(
-                    f"Skipping '{file_path}' as it has already been processed (hash: {file_hash[:7]}...)."
+                    f"Skipping '{file_path}' as it has already been processed "
+                    f"(hash: {file_hash[:7]}...)."
                 )
         except FileNotFoundError:
             logger.error(f"File not found during hashing: {file_path}. Skipping.")
@@ -143,12 +148,6 @@ def filter_completed_files(files: list[str], settings: Settings) -> dict[str, st
             logger.error(f"Error hashing file {file_path}: {e}. Skipping.")
 
     return files_to_process
-
-
-import concurrent.futures
-from typing import Tuple
-
-from . import loader, parser, transformer
 
 
 def process_files_parallel(
@@ -192,16 +191,12 @@ def process_files_parallel(
                 failure_count += 1
 
     logger.info(
-        f"Parallel processing finished. Success: {success_count}, Failures: {failure_count}."
+        "Parallel processing finished. "
+        f"Success: {success_count}, Failures: {failure_count}."
     )
 
     if failure_count > 0:
         raise RuntimeError(f"{failure_count} file(s) failed to process.")
-
-
-import json
-import os
-from datetime import datetime
 
 
 def _process_normalized_file(
@@ -240,9 +235,6 @@ def _process_audit_file(f, db_loader, file_path, file_hash, mode) -> Tuple[bool,
         file_hash=file_hash,
     )
     return True, f"Loaded {count} records into audit schema."
-
-
-from lxml import etree
 
 
 def _quarantine_file(

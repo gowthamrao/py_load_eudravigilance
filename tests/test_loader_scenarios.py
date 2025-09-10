@@ -12,7 +12,7 @@ TEST_DATA_DIR = Path(__file__).parent / "data"
 
 @pytest.fixture(scope="function")
 def db_container():
-    """A fixture to provide a fresh, ephemeral PostgreSQL database for each test function."""
+    """A fixture to provide a fresh PostgreSQL database for each test."""
     with PostgresContainer("postgres:14") as container:
         # The container is started when entering the 'with' block
         # and automatically stopped/cleaned up on exit.

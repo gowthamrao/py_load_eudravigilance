@@ -7,6 +7,9 @@ from py_load_eudravigilance.cli import app
 from sqlalchemy import create_engine, text
 from testcontainers.postgres import PostgresContainer
 from typer.testing import CliRunner
+from pytest_mock import MockerFixture
+from pathlib import Path
+import click
 
 runner = CliRunner()
 
@@ -319,3 +322,150 @@ def test_cli_run_with_validation(postgres_container, db_engine, tmp_path):
     meta_file = quarantine_path / "invalid_case.xml.meta.json"
     assert meta_file.exists()
     assert "XSD validation failed" in meta_file.read_text()
+
+
+def test_run_config_not_found():
+    """Verify `run` command exits if config file is not found."""
+    result = runner.invoke(app, ["run", "--config", "nonexistent.yml"])
+    assert result.exit_code != 0
+
+
+def test_run_config_invalid_yaml():
+    """Verify `run` command exits for a malformed config file."""
+    with runner.isolated_filesystem():
+        with open("config.yml", "w") as f:
+            f.write("database: { dsn: bad-yaml")  # Malformed YAML
+        result = runner.invoke(app, ["run", "--config", "config.yml"])
+    assert result.exit_code == 1
+
+
+
+def test_run_no_source_uri(mocker: MockerFixture):
+    """Verify `run` exits if source_uri is missing."""
+    mock_settings = mocker.MagicMock()
+    mock_settings.source_uri = None
+    mocker.patch("py_load_eudravigilance.cli.load_config", return_value=mock_settings)
+
+    with runner.isolated_filesystem():
+        with open("config.yml", "w") as f:
+            f.write("database:\n  dsn: dummy_dsn")
+        result = runner.invoke(app, ["run", "--config", "config.yml"])
+
+    assert result.exit_code == 1
+    assert "Error: A source URI must be provided" in result.stdout
+
+
+def test_run_validate_no_schema_path(mocker: MockerFixture):
+    """Verify `run` exits if --validate is used without xsd_schema_path."""
+    mock_settings = mocker.MagicMock()
+    mock_settings.source_uri = "some/path"
+    mock_settings.xsd_schema_path = None
+    mocker.patch("py_load_eudravigilance.cli.load_config", return_value=mock_settings)
+
+    with runner.isolated_filesystem():
+        with open("config.yml", "w") as f:
+            f.write("database:\n  dsn: dummy_dsn")
+        result = runner.invoke(app, ["run", "--config", "config.yml", "--validate"])
+
+    assert result.exit_code == 1
+    assert "Error: --validate flag requires 'xsd_schema_path'" in result.stdout
+
+
+def test_run_etl_exception(mocker: MockerFixture):
+    """Verify `run` handles exceptions during ETL execution."""
+    mock_settings = mocker.MagicMock()
+    mock_settings.source_uri = "some/path"
+    mocker.patch("py_load_eudravigilance.cli.load_config", return_value=mock_settings)
+    mocker.patch(
+        "py_load_eudravigilance.cli.etl_run.run_etl", side_effect=Exception("ETL failed")
+    )
+
+    with runner.isolated_filesystem():
+        with open("config.yml", "w") as f:
+            f.write("database:\n  dsn: dummy_dsn")
+        result = runner.invoke(app, ["run", "--config", "config.yml"])
+
+    assert result.exit_code == 1
+    assert "An error occurred during the ETL process: ETL failed" in result.stdout
+
+
+def test_init_db_failure(mocker: MockerFixture):
+    """Verify that the init-db command handles exceptions."""
+    mocker.patch(
+        "py_load_eudravigilance.cli.load_config",
+        side_effect=Exception("Connection error"),
+    )
+
+    with runner.isolated_filesystem():
+        with open("config.yml", "w") as f:
+            f.write("database:\n  dsn: dummy_dsn")
+
+        result = runner.invoke(app, ["init-db", "--config", "config.yml"])
+
+    assert result.exit_code == 1
+    assert "Database initialization failed: Connection error" in result.stdout
+
+
+def test_validate_no_files_found(mocker: MockerFixture):
+    """Test `validate` command when no files are found."""
+    mocker.patch("fsspec.open_files", return_value=[])
+    # We patch typer.Exit to prevent the test process from terminating
+    # This allows coverage to be reported correctly for this line.
+    mocker.patch("typer.Exit", side_effect=SystemExit)
+
+    with runner.isolated_filesystem():
+        Path("schema.xsd").write_text("<schema/>")
+        result = runner.invoke(
+            app, ["validate", "nonexistent/*.xml", "--schema", "schema.xsd"], catch_exceptions=True
+        )
+
+    # Assert that the exit code is 0, as typer.Exit() with no code defaults to 0
+    assert result.exit_code == 0
+    assert "No files found at the specified URI." in result.stdout
+
+
+
+def test_validate_fsspec_error(mocker: MockerFixture):
+    """Test `validate` command when fsspec raises an error."""
+    mocker.patch("fsspec.open_files", side_effect=Exception("S3 bucket not found"))
+    with runner.isolated_filesystem():
+        Path("schema.xsd").write_text("<schema/>")
+        result = runner.invoke(
+            app, ["validate", "s3://fake/bucket/*.xml", "--schema", "schema.xsd"]
+        )
+    assert result.exit_code == 1
+    assert "Error accessing source files: S3 bucket not found" in result.stdout
+
+
+def test_validate_db_schema_value_error(mocker: MockerFixture):
+    """Test `validate-db-schema` for a schema mismatch (ValueError)."""
+    mock_loader = mocker.MagicMock()
+    mock_loader.validate_schema.side_effect = ValueError("Schema mismatch")
+    mocker.patch("py_load_eudravigilance.cli.get_loader", return_value=mock_loader)
+    mocker.patch("py_load_eudravigilance.cli.load_config")
+
+    with runner.isolated_filesystem():
+        with open("config.yml", "w") as f:
+            f.write("database:\n  dsn: dummy_dsn")
+        result = runner.invoke(app, ["validate-db-schema", "-c", "config.yml"])
+
+    assert result.exit_code == 1
+    assert "Schema Validation Failed:" in result.stdout
+    assert "Schema mismatch" in result.stdout
+
+
+def test_validate_db_schema_unexpected_error(mocker: MockerFixture):
+    """Test `validate-db-schema` for an unexpected exception."""
+    mocker.patch(
+        "py_load_eudravigilance.cli.load_config",
+        side_effect=Exception("DB connection failed"),
+    )
+
+    with runner.isolated_filesystem():
+        with open("config.yml", "w") as f:
+            f.write("database:\n  dsn: dummy_dsn")
+        result = runner.invoke(app, ["validate-db-schema", "-c", "config.yml"])
+
+    assert result.exit_code == 1
+    assert "An unexpected error occurred" in result.stdout
+    assert "DB connection failed" in result.stdout

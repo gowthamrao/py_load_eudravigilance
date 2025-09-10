@@ -1,83 +1,113 @@
 """
 Configuration management for the application.
 
-This module handles loading settings from a YAML file and overriding
-them with environment variables for flexible configuration.
+This module uses Pydantic to provide a robust, hierarchical, and type-safe
+configuration system. It supports loading settings from a YAML file and
+overriding them with environment variables.
 """
 
-import os
+from __future__ import annotations
+
+import collections.abc
+from pathlib import Path
+from typing import Any, Dict, Optional
+
 import yaml
-from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from pydantic import BaseModel, Field, field_validator, ValidationError
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 CONFIG_FILE_NAME = "config.yaml"
 
-@dataclass
-class DatabaseConfig:
-    """Dataclass for database connection settings."""
-    dsn: str
 
-@dataclass
-class Settings:
-    """Main configuration class for the application."""
+def deep_merge(source: Dict, destination: Dict) -> Dict:
+    """
+    Recursively merges source dict into destination dict.
+    Nested dictionaries are merged, other values in destination are overwritten.
+    """
+    for key, value in source.items():
+        if isinstance(value, collections.abc.Mapping) and key in destination:
+            destination[key] = deep_merge(value, destination.get(key, {}))
+        else:
+            destination[key] = value
+    return destination
+
+
+class DatabaseConfig(BaseModel):
+    """Pydantic model for database connection settings."""
+    dsn: str = Field(..., description="The full database connection string (DSN).")
+
+
+# This is the final, strict configuration model that will be used by the application.
+# It enforces that required fields like 'database' are present.
+class Settings(BaseModel):
+    """The application's strict configuration model."""
     database: DatabaseConfig
     source_uri: Optional[str] = None
     schema_type: str = "normalized"
     quarantine_uri: Optional[str] = None
     xsd_schema_path: Optional[str] = None
 
+    @field_validator("schema_type")
+    @classmethod
+    def validate_schema_type(cls, v: str) -> str:
+        if v not in ["normalized", "audit"]:
+            raise ValueError("schema_type must be either 'normalized' or 'audit'")
+        return v
 
-def load_config(path: str = f"./{CONFIG_FILE_NAME}") -> Settings:
-    """
-    Loads configuration from a YAML file and environment variables.
 
-    Environment variables can override YAML settings. For example, to override
-    the database DSN, set the environment variable:
-    PY_LOAD_EUDRAVIGILANCE_DATABASE_DSN
-
-    Args:
-        path: The path to the configuration file.
-
-    Returns:
-        A Settings object with the loaded configuration.
-    """
-    config_from_file = _load_config_from_yaml(path)
-
-    # Override with environment variables
-    db_dsn_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_DATABASE_DSN")
-    source_uri_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_SOURCE_URI")
-    schema_type_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_SCHEMA_TYPE")
-    quarantine_uri_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_QUARANTINE_URI")
-    xsd_schema_path_env = os.getenv("PY_LOAD_EUDRAVIGILANCE_XSD_SCHEMA_PATH")
-
-    db_dsn = db_dsn_env or config_from_file.get("database", {}).get("dsn")
-    source_uri = source_uri_env or config_from_file.get("source_uri")
-    schema_type = schema_type_env or config_from_file.get("schema_type", "normalized")
-    quarantine_uri = quarantine_uri_env or config_from_file.get("quarantine_uri")
-    xsd_schema_path = xsd_schema_path_env or config_from_file.get("xsd_schema_path")
-
-    if not db_dsn:
-        raise ValueError("Database DSN must be provided in config.yaml or via PY_LOAD_EUDRAVIGILANCE_DATABASE_DSN env var.")
-
-    if schema_type not in ["normalized", "audit"]:
-        raise ValueError("schema_type must be either 'normalized' or 'audit'")
-
-    return Settings(
-        database=DatabaseConfig(dsn=db_dsn),
-        source_uri=source_uri,
-        schema_type=schema_type,
-        quarantine_uri=quarantine_uri,
-        xsd_schema_path=xsd_schema_path,
+# This is a helper model used ONLY to load settings from environment variables.
+# All fields are optional, so it won't raise validation errors if env vars are missing.
+class _EnvSettings(BaseSettings):
+    """Helper model to load environment variables without strict validation."""
+    model_config = SettingsConfigDict(
+        env_prefix="PY_LOAD_EUDRAVIGILANCE_",
+        env_nested_delimiter="__",
+        case_sensitive=False,
     )
 
-def _load_config_from_yaml(path: str) -> Dict[str, Any]:
-    """Loads configuration from a YAML file if it exists."""
-    if os.path.exists(path):
-        with open(path, "r") as f:
-            return yaml.safe_load(f) or {}
-    return {}
+    database: Optional[DatabaseConfig] = None
+    source_uri: Optional[str] = None
+    schema_type: Optional[str] = None
+    quarantine_uri: Optional[str] = None
+    xsd_schema_path: Optional[str] = None
 
-# A default settings instance for easy importing
-# In a real app, you might have a more sophisticated way to manage this
-# but for the CLI, we will load it explicitly.
-# settings = load_config()
+
+def load_config(path: Optional[str] = None) -> Settings:
+    """
+    Loads application configuration with correct precedence.
+
+    The loading precedence is:
+    1. Environment Variables
+    2. YAML Configuration File
+    3. Model Default Values (from the `Settings` model)
+
+    Args:
+        path: Path to the YAML configuration file. Defaults to './config.yaml'.
+
+    Returns:
+        A fully populated and validated Settings object.
+    """
+    config_path = path or f"./{CONFIG_FILE_NAME}"
+
+    # 1. Load base configuration from the YAML file.
+    file_config: Dict[str, Any] = {}
+    if Path(config_path).is_file():
+        with open(config_path, "r") as f:
+            file_config = yaml.safe_load(f) or {}
+
+    # 2. Load settings from environment variables using the helper model.
+    env_loader = _EnvSettings()
+    # `exclude_unset=True` ensures we only get values explicitly set in the env.
+    env_config = env_loader.model_dump(exclude_unset=True)
+
+    # 3. Merge the configurations.
+    # We start with the file config and merge the env config into it,
+    # so environment variables take precedence.
+    merged_config = deep_merge(source=env_config, destination=file_config)
+
+    try:
+        # 4. Create the final, validated settings object from the merged config.
+        # The main `Settings` class provides the strict validation.
+        return Settings(**merged_config)
+    except ValidationError as e:
+        raise ValueError(f"Configuration validation error: {e}") from e

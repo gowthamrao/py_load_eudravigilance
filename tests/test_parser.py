@@ -112,3 +112,57 @@ def test_parse_mixed_validity_xml():
     # Check the valid reports
     valid_ids = {r["safetyreportid"] for r in valid_reports}
     assert valid_ids == {"TEST-VALID-001", "TEST-VALID-003"}
+
+
+from py_load_eudravigilance.parser import _element_to_dict
+from lxml import etree
+
+
+def test_element_to_dict_conversion():
+    """
+    Tests the _element_to_dict helper function directly.
+
+    It verifies that:
+    1. XML namespaces are correctly stripped from tags.
+    2. Simple text content is captured.
+    3. Nested elements are converted to nested dictionaries.
+    4. Repeated elements at the same level are aggregated into a list.
+    """
+    xml_string = """
+    <root xmlns="http://example.com/ns">
+        <simple>value1</simple>
+        <nested>
+            <item>A</item>
+            <item>B</item>
+        </nested>
+        <repeated>
+            <subitem>S1</subitem>
+        </repeated>
+        <repeated>
+            <subitem>S2</subitem>
+            <anothersub>S3</anothersub>
+        </repeated>
+        <empty></empty>
+    </root>
+    """
+    # Parse the string into an lxml element
+    root_element = etree.fromstring(xml_string.encode("utf-8"))
+
+    # Call the function to be tested
+    result_dict = _element_to_dict(root_element)
+
+    # Define the expected dictionary structure
+    expected_dict = {
+        "root": {
+            "simple": "value1",
+            "nested": {"item": ["A", "B"]},
+            "repeated": [
+                {"subitem": "S1"},
+                {"subitem": "S2", "anothersub": "S3"},
+            ],
+            "empty": None,
+        }
+    }
+
+    # Assert that the result matches the expected structure
+    assert result_dict == expected_dict

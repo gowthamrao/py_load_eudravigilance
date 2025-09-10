@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 # A concrete implementation would use its specific connection object.
 from sqlalchemy.engine import Connection
 
+
 class LoaderInterface(ABC):
     """
     Abstract Base Class for database loaders.
@@ -32,7 +33,11 @@ class LoaderInterface(ABC):
 
     @abstractmethod
     def bulk_load_native(
-        self, conn: Connection, data_stream: IOBase, target_table: str, columns: List[str]
+        self,
+        conn: Connection,
+        data_stream: IOBase,
+        target_table: str,
+        columns: List[str],
     ) -> None:
         """
         Stream data from data_stream into the target_table using the

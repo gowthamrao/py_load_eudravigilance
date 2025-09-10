@@ -1,10 +1,9 @@
-import pytest
-from typer.testing import CliRunner
 from pathlib import Path
 
+import pytest
 from py_load_eudravigilance.cli import app
 from py_load_eudravigilance.parser import validate_xml_with_xsd
-import io
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
@@ -111,7 +110,10 @@ def test_xsd_validation_logic(test_files):
     assert is_valid is False
     assert len(errors) > 0
     # Check for a specific, expected error message from lxml
-    assert "Missing child element(s). Expected is ( {urn:hl7-org:v3}patientsex )" in errors[0]
+    assert (
+        "Missing child element(s). Expected is ( {urn:hl7-org:v3}patientsex )"
+        in errors[0]
+    )
 
 
 def test_validate_command_glob_pattern(test_files):
@@ -122,7 +124,7 @@ def test_validate_command_glob_pattern(test_files):
     xsd_file = test_files[2]
 
     result = runner.invoke(app, ["validate", glob_pattern, f"--schema={xsd_file}"])
-    assert result.exit_code == 1 # Should fail because one file is invalid
+    assert result.exit_code == 1  # Should fail because one file is invalid
     assert "[VALID]" in result.stdout
     assert "valid.xml" in result.stdout
     assert "[INVALID]" in result.stdout

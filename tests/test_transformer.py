@@ -1,7 +1,6 @@
 """
 Unit tests for the Transformer module.
 """
-import io
 import csv
 
 from py_load_eudravigilance.transformer import transform_and_normalize
@@ -58,7 +57,7 @@ SAMPLE_ICSR_2 = {
     "reactions": [
         {"primarysourcereaction": "Rash", "reactionmeddrapt": "Rash"},
     ],
-    "drugs": [], # Test case with no drugs
+    "drugs": [],  # Test case with no drugs
 }
 
 
@@ -99,10 +98,10 @@ def test_transform_and_normalize():
     assert row_counts["icsr_master"] == 2
     assert row_counts["patient_characteristics"] == 2
     assert row_counts["reactions"] == 3  # 2 from first case, 1 from second
-    assert row_counts["drugs"] == 2 # Now two drugs in the first case
-    assert row_counts["drug_substances"] == 3 # 1 for DrugA, 2 for DrugB
-    assert row_counts["tests_procedures"] == 0 # No tests in sample data
-    assert row_counts["case_summary_narrative"] == 0 # No narrative in sample
+    assert row_counts["drugs"] == 2  # Now two drugs in the first case
+    assert row_counts["drug_substances"] == 3  # 1 for DrugA, 2 for DrugB
+    assert row_counts["tests_procedures"] == 0  # No tests in sample data
+    assert row_counts["case_summary_narrative"] == 0  # No narrative in sample
 
     # 3. Check the content of each buffer in a more robust way
     # Rewind buffers before reading
@@ -120,31 +119,39 @@ def test_transform_and_normalize():
     # Validate icsr_master
     master_rows = parsed_data.get("icsr_master", [])
     assert len(master_rows) == 2
-    case1_master = next(r for r in master_rows if r['safetyreportid'] == 'TEST-CASE-001')
-    assert case1_master['senderidentifier'] == 'SENDER1'
-    assert case1_master['is_nullified'] == 'False'
-    case2_master = next(r for r in master_rows if r['safetyreportid'] == 'TEST-CASE-002')
-    assert case2_master['qualification'] == 'Pharmacist'
-    assert case2_master['is_nullified'] == 'True'
+    case1_master = next(
+        r for r in master_rows if r["safetyreportid"] == "TEST-CASE-001"
+    )
+    assert case1_master["senderidentifier"] == "SENDER1"
+    assert case1_master["is_nullified"] == "False"
+    case2_master = next(
+        r for r in master_rows if r["safetyreportid"] == "TEST-CASE-002"
+    )
+    assert case2_master["qualification"] == "Pharmacist"
+    assert case2_master["is_nullified"] == "True"
 
     # Validate reactions
     reaction_rows = parsed_data.get("reactions", [])
     assert len(reaction_rows) == 3
-    case1_reactions = [r for r in reaction_rows if r['safetyreportid'] == 'TEST-CASE-001']
+    case1_reactions = [
+        r for r in reaction_rows if r["safetyreportid"] == "TEST-CASE-001"
+    ]
     assert len(case1_reactions) == 2
-    assert {"Nausea", "Headache"} == {r['reactionmeddrapt'] for r in case1_reactions}
+    assert {"Nausea", "Headache"} == {r["reactionmeddrapt"] for r in case1_reactions}
 
     # Validate drugs
     drug_rows = parsed_data.get("drugs", [])
     assert len(drug_rows) == 2
-    assert all(r['safetyreportid'] == 'TEST-CASE-001' for r in drug_rows)
-    drug_a = next(r for r in drug_rows if r['medicinalproduct'] == 'DrugA')
-    assert drug_a['drugcharacterization'] == '1'
-    assert drug_a['drugstructuredosagenumb'] == '10'
+    assert all(r["safetyreportid"] == "TEST-CASE-001" for r in drug_rows)
+    drug_a = next(r for r in drug_rows if r["medicinalproduct"] == "DrugA")
+    assert drug_a["drugcharacterization"] == "1"
+    assert drug_a["drugstructuredosagenumb"] == "10"
 
     # Validate drug_substances
     substance_rows = parsed_data.get("drug_substances", [])
     assert len(substance_rows) == 3
-    drug_b_substances = [r for r in substance_rows if r['drug_seq'] == '2']
+    drug_b_substances = [r for r in substance_rows if r["drug_seq"] == "2"]
     assert len(drug_b_substances) == 2
-    assert {"SubstanceY", "SubstanceZ"} == {r['activesubstancename'] for r in drug_b_substances}
+    assert {"SubstanceY", "SubstanceZ"} == {
+        r["activesubstancename"] for r in drug_b_substances
+    }

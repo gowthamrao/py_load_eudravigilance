@@ -5,14 +5,15 @@ This module defines the database loader interface and provides concrete
 implementations for different database backends (e.g., PostgreSQL).
 It is responsible for all database interactions, including native bulk loading.
 """
-import sqlalchemy
-from io import IOBase
 from importlib import metadata
+from io import IOBase
 from typing import Any, Dict, List
-from sqlalchemy import Table, select
-from .interfaces import LoaderInterface
-from . import schema as db_schema
 
+import sqlalchemy
+from sqlalchemy import Table, select
+
+from . import schema as db_schema
+from .interfaces import LoaderInterface
 
 try:
     import psycopg2
@@ -37,7 +38,7 @@ def get_loader(dsn_or_engine: Any) -> LoaderInterface:
         # The dialect name (e.g., 'postgresql', 'mysql') is used as the plugin key
         dialect_name = url.get_dialect().name
     except Exception as e:
-        raise ValueError(f"Could not determine database dialect from DSN: {e}")
+        raise ValueError(f"Could not determine database dialect from DSN: {e}") from e
 
     # Discover registered loader plugins
     try:
@@ -62,7 +63,9 @@ def get_loader(dsn_or_engine: Any) -> LoaderInterface:
                     f"Original error: {ne}"
                 )
             except Exception as e:
-                raise RuntimeError(f"Failed to instantiate loader for dialect '{dialect_name}'.") from e
+                raise RuntimeError(
+                    f"Failed to instantiate loader for dialect '{dialect_name}'."
+                ) from e
 
     # If no loader was found after checking all entry points
     raise ValueError(
@@ -159,7 +162,7 @@ class PostgresLoader(LoaderInterface):
 
         # 2. Check columns and PKs for existing tables
         for table_name, table_obj in expected_tables.items():
-            db_columns = {c['name']: c for c in inspector.get_columns(table_name)}
+            db_columns = {c["name"]: c for c in inspector.get_columns(table_name)}
             expected_columns = {c.name: c for c in table_obj.columns}
 
             # Check for missing columns in the database
@@ -170,7 +173,7 @@ class PostgresLoader(LoaderInterface):
 
                 # Check column type compatibility (by class)
                 expected_type = col_obj.type
-                db_type = db_columns[col_name]['type']
+                db_type = db_columns[col_name]["type"]
                 if not isinstance(db_type, expected_type.__class__):
                     errors.append(
                         f"Table '{table_name}', Column '{col_name}': Type mismatch. "
@@ -187,7 +190,7 @@ class PostgresLoader(LoaderInterface):
                     )
 
             # Check primary key
-            db_pk_cols = inspector.get_pk_constraint(table_name)['constrained_columns']
+            db_pk_cols = inspector.get_pk_constraint(table_name)["constrained_columns"]
             expected_pk_cols = [c.name for c in table_obj.primary_key.columns]
 
             if set(db_pk_cols) != set(expected_pk_cols):
@@ -204,7 +207,9 @@ class PostgresLoader(LoaderInterface):
 
         return True
 
-    def prepare_load(self, conn: sqlalchemy.Connection, target_table: str, load_mode: str) -> str:
+    def prepare_load(
+        self, conn: sqlalchemy.Connection, target_table: str, load_mode: str
+    ) -> str:
         """
         Prepares the database for loading. For 'delta' mode, this is part of
         the file transaction. For 'full' mode, this is a separate, committed
@@ -232,7 +237,11 @@ class PostgresLoader(LoaderInterface):
             raise ValueError(f"Unknown load mode: {load_mode}")
 
     def bulk_load_native(
-        self, conn: sqlalchemy.Connection, data_stream: IOBase, target_table: str, columns: List[str]
+        self,
+        conn: sqlalchemy.Connection,
+        data_stream: IOBase,
+        target_table: str,
+        columns: List[str],
     ) -> None:
         """
         Loads data from an in-memory buffer into a PostgreSQL table using COPY.
@@ -265,14 +274,11 @@ class PostgresLoader(LoaderInterface):
         commit the transaction.
         """
         target_table_obj = self._get_table_obj(conn, target_table)
-        staging_table_obj = self._get_table_obj(
-            conn, staging_table
-        )
+        staging_table_obj = self._get_table_obj(conn, staging_table)
 
         # Reflect the columns from the staging table to build the insert
         insert_stmt = pg_insert(target_table_obj).from_select(
-            [c.name for c in staging_table_obj.c],
-            select(staging_table_obj)
+            [c.name for c in staging_table_obj.c], select(staging_table_obj)
         )
 
         # For the ON CONFLICT clause, get the "excluded" table proxy
@@ -328,7 +334,6 @@ class PostgresLoader(LoaderInterface):
 
         print(f"Upsert completed from '{staging_table}' to '{target_table}'.")
 
-
     def _get_table_obj(self, conn: sqlalchemy.Connection, table_name: str) -> Table:
         """
         Gets a SQLAlchemy Table object from the schema or by reflection.
@@ -342,9 +347,7 @@ class PostgresLoader(LoaderInterface):
 
         # If not found (e.g., a temp or test-specific table), reflect it
         temp_meta = sqlalchemy.MetaData()
-        return Table(
-            table_name, temp_meta, autoload_with=conn
-        )
+        return Table(table_name, temp_meta, autoload_with=conn)
 
     def create_all_tables(self) -> None:
         """
@@ -386,7 +389,6 @@ class PostgresLoader(LoaderInterface):
         )
         conn.execute(update_stmt)
 
-
     def get_completed_file_hashes(self) -> set[str]:
         """
         Retrieves a set of file hashes for all files that have been
@@ -418,7 +420,7 @@ class PostgresLoader(LoaderInterface):
 
         # Get primary keys
         pk_constraint = inspector.get_pk_constraint(table_name)
-        primary_keys = pk_constraint['constrained_columns']
+        primary_keys = pk_constraint["constrained_columns"]
 
         # Find version key by checking column comments
         version_key = None
@@ -460,17 +462,19 @@ class PostgresLoader(LoaderInterface):
                         # In 'delta' mode, it goes to a staging table.
                         if load_mode == "full":
                             target_or_staging_table = table_name
-                        else: # delta
+                        else:  # delta
                             target_or_staging_table = self.prepare_load(
                                 conn, target_table=table_name, load_mode=load_mode
                             )
 
                         buffer.seek(0)
                         header = buffer.readline().strip()
-                        columns = header.split(',')
+                        columns = header.split(",")
                         buffer.seek(0)
 
-                        self.bulk_load_native(conn, buffer, target_or_staging_table, columns)
+                        self.bulk_load_native(
+                            conn, buffer, target_or_staging_table, columns
+                        )
 
                         if load_mode == "delta":
                             table_meta = self._get_table_metadata(table_name)
@@ -482,7 +486,9 @@ class PostgresLoader(LoaderInterface):
                                 version_key=table_meta["version_key"],
                             )
 
-                self._log_file_status(conn, file_path, file_hash, "completed", total_rows)
+                self._log_file_status(
+                    conn, file_path, file_hash, "completed", total_rows
+                )
         except Exception as e:
             print(f"Error during normalized load for file {file_path}. Rolling back.")
             with self.engine.begin() as conn:
@@ -509,11 +515,13 @@ class PostgresLoader(LoaderInterface):
 
         try:
             with self.engine.begin() as conn:
-                self._log_file_status(conn, file_path, file_hash, "running_audit", row_count)
+                self._log_file_status(
+                    conn, file_path, file_hash, "running_audit", row_count
+                )
 
                 if load_mode == "full":
                     target_or_staging_table = TABLE_NAME
-                else: # delta
+                else:  # delta
                     target_or_staging_table = self.prepare_load(
                         conn, target_table=TABLE_NAME, load_mode=load_mode
                     )
@@ -541,7 +549,9 @@ class PostgresLoader(LoaderInterface):
                         version_key=table_meta["version_key"],
                     )
 
-                self._log_file_status(conn, file_path, file_hash, "completed_audit", row_count)
+                self._log_file_status(
+                    conn, file_path, file_hash, "completed_audit", row_count
+                )
         except Exception as e:
             print(f"Error during audit load for file {file_path}. Rolling back.")
             with self.engine.begin() as conn:

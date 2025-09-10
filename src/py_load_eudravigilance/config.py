@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 CONFIG_FILE_NAME = "config.yaml"
@@ -34,6 +34,7 @@ def deep_merge(source: Dict, destination: Dict) -> Dict:
 
 class DatabaseConfig(BaseModel):
     """Pydantic model for database connection settings."""
+
     dsn: str = Field(..., description="The full database connection string (DSN).")
 
 
@@ -41,6 +42,7 @@ class DatabaseConfig(BaseModel):
 # It enforces that required fields like 'database' are present.
 class Settings(BaseModel):
     """The application's strict configuration model."""
+
     database: DatabaseConfig
     source_uri: Optional[str] = None
     schema_type: str = "normalized"
@@ -59,6 +61,7 @@ class Settings(BaseModel):
 # All fields are optional, so it won't raise validation errors if env vars are missing.
 class _EnvSettings(BaseSettings):
     """Helper model to load environment variables without strict validation."""
+
     model_config = SettingsConfigDict(
         env_prefix="PY_LOAD_EUDRAVIGILANCE_",
         env_nested_delimiter="__",

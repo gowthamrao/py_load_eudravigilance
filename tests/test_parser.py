@@ -1,10 +1,6 @@
-import os
 from pathlib import Path
 
-from py_load_eudravigilance.parser import (
-    parse_icsr_xml,
-    InvalidICSRError,
-)
+from py_load_eudravigilance.parser import InvalidICSRError, parse_icsr_xml
 
 # Get the directory of the current test file to build a path to the sample data.
 TEST_DIR = Path(__file__).parent
@@ -114,8 +110,8 @@ def test_parse_mixed_validity_xml():
     assert valid_ids == {"TEST-VALID-001", "TEST-VALID-003"}
 
 
-from py_load_eudravigilance.parser import _element_to_dict
 from lxml import etree
+from py_load_eudravigilance.parser import _element_to_dict
 
 
 def test_element_to_dict_conversion():
@@ -168,8 +164,7 @@ def test_element_to_dict_conversion():
     assert result_dict == expected_dict
 
 
-import io
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from py_load_eudravigilance.parser import validate_xml_with_xsd
 
@@ -195,9 +190,9 @@ def test_validate_xml_uses_streaming_parser(tmp_path):
     )
 
     # We patch `etree.parse` and `etree.XMLParser` itself.
-    with patch("py_load_eudravigilance.parser.etree.parse") as mock_etree_parse, \
-         patch("py_load_eudravigilance.parser.etree.XMLParser") as mock_xml_parser:
-
+    with patch("py_load_eudravigilance.parser.etree.parse") as mock_etree_parse, patch(
+        "py_load_eudravigilance.parser.etree.XMLParser"
+    ) as mock_xml_parser:
         # The XMLParser class will now return a mock instance.
         mock_parser_instance = mock_xml_parser.return_value
         # Make the parse mock return a valid, minimal ElementTree object

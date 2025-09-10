@@ -1,22 +1,27 @@
-import pytest
-from testcontainers.postgres import PostgresContainer
-from py_load_eudravigilance.loader import PostgresLoader
 from io import StringIO
+
+import pytest
 import sqlalchemy
+from py_load_eudravigilance.loader import PostgresLoader
+from testcontainers.postgres import PostgresContainer
+
 
 @pytest.fixture(scope="module")
 def postgres_container():
     with PostgresContainer("postgres:13") as container:
         yield container
 
+
 @pytest.fixture(scope="module")
 def loader(postgres_container):
     engine = postgres_container.get_connection_url()
     return PostgresLoader(engine)
 
+
 def test_connection(loader):
     """Tests that the loader is initialized with an engine."""
     assert loader.engine is not None
+
 
 def test_create_and_load_data(loader):
     # 1. Create a test table
@@ -40,7 +45,9 @@ def test_create_and_load_data(loader):
 
     # 4. Verify data
     with loader.engine.connect() as connection:
-        result = connection.execute(sqlalchemy.text("SELECT * FROM test_data ORDER BY id;")).fetchall()
+        result = connection.execute(
+            sqlalchemy.text("SELECT * FROM test_data ORDER BY id;")
+        ).fetchall()
         assert len(result) == 2
         assert result[0][0] == 1
         assert result[0][1] == "Alice"
@@ -58,18 +65,19 @@ def test_dynamic_upsert(loader):
         sqlalchemy.Column("pk1", sqlalchemy.Integer, primary_key=True),
         sqlalchemy.Column("pk2", sqlalchemy.String(10), primary_key=True),
         sqlalchemy.Column("data", sqlalchemy.String(50)),
-        sqlalchemy.Column(
-            "version", sqlalchemy.Integer, comment="VERSION_KEY"
-        ),
+        sqlalchemy.Column("version", sqlalchemy.Integer, comment="VERSION_KEY"),
     )
     metadata.create_all(loader.engine)
 
     # 2. Pre-populate the table with initial data
     with loader.engine.begin() as conn:
-        conn.execute(test_table.insert(), [
-            {"pk1": 1, "pk2": "a", "data": "initial_A", "version": 1},
-            {"pk1": 1, "pk2": "b", "data": "initial_B", "version": 1},
-        ])
+        conn.execute(
+            test_table.insert(),
+            [
+                {"pk1": 1, "pk2": "a", "data": "initial_A", "version": 1},
+                {"pk1": 1, "pk2": "b", "data": "initial_B", "version": 1},
+            ],
+        )
 
     # 3. Use the loader's methods to create a staging table and load data
     with loader.engine.begin() as conn:
@@ -101,7 +109,9 @@ def test_dynamic_upsert(loader):
 
     # 5. Verify the final state of the table
     with loader.engine.connect() as connection:
-        result = connection.execute(sqlalchemy.select(test_table).order_by("pk1", "pk2")).fetchall()
+        result = connection.execute(
+            sqlalchemy.select(test_table).order_by("pk1", "pk2")
+        ).fetchall()
 
         assert len(result) == 3
 
@@ -145,7 +155,9 @@ def test_full_load_truncates_data(loader):
 
     # 4. Verify the initial load
     with loader.engine.connect() as conn:
-        count = conn.execute(sqlalchemy.text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
+        count = conn.execute(
+            sqlalchemy.text("SELECT COUNT(*) FROM icsr_master")
+        ).scalar_one()
         assert count == 1
 
     # 5. Reset buffers and perform a second full load with the same data
@@ -162,7 +174,9 @@ def test_full_load_truncates_data(loader):
 
     # 6. Verify that the table was truncated and now contains only the new load
     with loader.engine.connect() as conn:
-        count = conn.execute(sqlalchemy.text("SELECT COUNT(*) FROM icsr_master")).scalar_one()
+        count = conn.execute(
+            sqlalchemy.text("SELECT COUNT(*) FROM icsr_master")
+        ).scalar_one()
         # If TRUNCATE worked, the count should still be 1, not 2.
         assert count == 1
 
@@ -197,7 +211,9 @@ def test_icsr_amendment_update(loader):
     # 4. Verify the initial state
     with loader.engine.connect() as conn:
         result = conn.execute(
-            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+            sqlalchemy.text(
+                f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
         ).first()
         assert result is not None
         assert result._asdict()["senderidentifier"] == "InitialSender"
@@ -224,13 +240,17 @@ def test_icsr_amendment_update(loader):
     with loader.engine.connect() as conn:
         # Check that there is still only one record
         count = conn.execute(
-            sqlalchemy.text(f"SELECT COUNT(*) FROM icsr_master WHERE safetyreportid = '{report_id}'")
+            sqlalchemy.text(
+                f"SELECT COUNT(*) FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
         ).scalar_one()
         assert count == 1
 
         # Check that the record was updated
         result = conn.execute(
-            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+            sqlalchemy.text(
+                f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
         ).first()
         assert result is not None
         assert result._asdict()["senderidentifier"] == "UpdatedSender"
@@ -265,7 +285,9 @@ def test_icsr_nullification(loader):
     # 4. Verify the initial state
     with loader.engine.connect() as conn:
         result = conn.execute(
-            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+            sqlalchemy.text(
+                f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
         ).first()
         assert result is not None
         assert result._asdict()["is_nullified"] is False
@@ -294,13 +316,17 @@ def test_icsr_nullification(loader):
     with loader.engine.connect() as conn:
         # Check that there is still only one record
         count = conn.execute(
-            sqlalchemy.text(f"SELECT COUNT(*) FROM icsr_master WHERE safetyreportid = '{report_id}'")
+            sqlalchemy.text(
+                f"SELECT COUNT(*) FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
         ).scalar_one()
         assert count == 1
 
         # Check that the record was correctly nullified
         result = conn.execute(
-            sqlalchemy.text(f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'")
+            sqlalchemy.text(
+                f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
         ).first()
         assert result is not None
         # The primary assertion: the flag is now True
@@ -349,7 +375,9 @@ def test_drugs_table_loading(loader):
     # 4. Verify the data in the drugs table
     with loader.engine.connect() as conn:
         result = conn.execute(
-            sqlalchemy.text(f"SELECT * FROM drugs WHERE safetyreportid = '{report_id}' ORDER BY drug_seq")
+            sqlalchemy.text(
+                f"SELECT * FROM drugs WHERE safetyreportid = '{report_id}' ORDER BY drug_seq"
+            )
         ).fetchall()
 
         assert len(result) == 2

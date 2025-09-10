@@ -8,10 +8,7 @@ into a relational format suitable for bulk loading into the target database.
 import csv
 import io
 import json
-from typing import Any, Dict, Generator, IO, List
-
-
-from typing import Dict, Tuple
+from typing import Any, Dict, Generator, List, Tuple
 
 from . import schema as db_schema
 from .parser import InvalidICSRError
@@ -84,7 +81,9 @@ def transform_and_normalize(
         # 1. Populate the master and patient tables (one-to-one)
         master_row = {k: icsr_dict.get(k) for k in schemas["icsr_master"]}
         is_nullified_val = master_row.get("is_nullified")
-        master_row["is_nullified"] = str(is_nullified_val is not None and is_nullified_val)
+        master_row["is_nullified"] = str(
+            is_nullified_val is not None and is_nullified_val
+        )
         writers["icsr_master"].writerow(master_row)
         row_counts["icsr_master"] += 1
 
@@ -156,7 +155,12 @@ def transform_for_audit(
         A tuple containing the CSV buffer and the total row count.
     """
     # Align the schema with the corrected database schema
-    schema = ["safetyreportid", "date_of_most_recent_info", "receiptdate", "icsr_payload"]
+    schema = [
+        "safetyreportid",
+        "date_of_most_recent_info",
+        "receiptdate",
+        "icsr_payload",
+    ]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=schema)
     writer.writeheader()

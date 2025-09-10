@@ -17,6 +17,18 @@ def mock_settings():
     )
 
 
+def test_discover_files_no_uri():
+    """Tests that discover_files returns an empty list when URI is empty."""
+    assert etl_run.discover_files("") == []
+
+
+def test_discover_files_fsspec_error():
+    """Tests that discover_files raises the exception from fsspec."""
+    with patch("fsspec.open_files", side_effect=IOError("Disk full")) as mock_open_files:
+        with pytest.raises(IOError, match="Disk full"):
+            etl_run.discover_files("some/path")
+
+
 def test_discover_files(mock_settings):
     """
     Tests that discover_files function calls fsspec.open_files correctly.
@@ -31,6 +43,11 @@ def test_discover_files(mock_settings):
         files = etl_run.discover_files(mock_settings.source_uri)
         mock_open_files.assert_called_once_with(mock_settings.source_uri)
         assert files == ["mock/path/file1.xml", "mock/path/file2.xml"]
+
+
+def test_filter_completed_files_no_input(mock_settings):
+    """Tests that filter_completed_files returns an empty dict for no input."""
+    assert etl_run.filter_completed_files([], mock_settings) == {}
 
 
 def test_filter_completed_files(mock_settings):
@@ -126,6 +143,29 @@ def test_process_file_normalized(mock_settings):
         assert "Loaded 1 rows" in message
 
 
+def test_run_etl_invalid_mode(mock_settings):
+    """Tests that a ValueError is raised for an unknown load mode."""
+    with pytest.raises(ValueError, match="Unknown load mode: invalid"):
+        etl_run.run_etl(mock_settings, mode="invalid")
+
+
+@patch("py_load_eudravigilance.run.discover_files")
+@patch("py_load_eudravigilance.run.filter_completed_files")
+@patch("py_load_eudravigilance.run.process_files_parallel")
+def test_run_etl_with_validation_logging(
+    mock_process_parallel, mock_filter, mock_discover, mock_settings, caplog
+):
+    """Tests that XSD validation info is logged when validate=True."""
+    mock_discover.return_value = []
+    mock_filter.return_value = {}
+    mock_settings.xsd_schema_path = "/path/to/schema.xsd"
+
+    with caplog.at_level("INFO"):
+        etl_run.run_etl(mock_settings, mode="delta", validate=True)
+
+    assert "XSD Validation: ENABLED" in caplog.text
+
+
 @patch("py_load_eudravigilance.run.discover_files")
 @patch("py_load_eudravigilance.run.filter_completed_files")
 @patch("py_load_eudravigilance.run.process_files_parallel")
@@ -161,6 +201,14 @@ def test_run_etl_no_files_to_process(mock_filter, mock_discover, mock_settings):
     ) as mock_process_parallel:
         etl_run.run_etl(mock_settings, mode="delta")
         mock_process_parallel.assert_not_called()
+
+
+def test_quarantine_file_no_uri(mock_settings):
+    """Tests that _quarantine_file does nothing if quarantine_uri is not set."""
+    mock_settings.quarantine_uri = None
+    with patch("fsspec.core.url_to_fs") as mock_url_to_fs:
+        etl_run._quarantine_file("path", "hash", mock_settings, Exception("e"))
+        mock_url_to_fs.assert_not_called()
 
 
 def test_process_file_quarantine_on_failure(mock_settings, tmp_path):

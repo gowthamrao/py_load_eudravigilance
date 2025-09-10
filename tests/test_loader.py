@@ -1,4 +1,5 @@
 import io
+from unittest.mock import patch
 
 import pytest
 import sqlalchemy
@@ -266,6 +267,26 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
         assert case2_final.receiptdate == "20240102"
 
 
+def test_get_loader_missing_dependency(mocker: MockerFixture):
+    """
+    Tests that get_loader raises an ImportError if the loader's dependencies
+    (e.g., psycopg2) are not installed, resulting in a NameError on import.
+    """
+    class LoaderWithMissingDep:
+        def __init__(self, dsn):
+            # This will raise a NameError because a_missing_dep is not defined
+            a_missing_dep.do_something()
+
+    mock_ep = mocker.MagicMock()
+    mock_ep.name = "postgresql"
+    mock_ep.load.return_value = LoaderWithMissingDep
+    mocker.patch("importlib.metadata.entry_points", return_value=[mock_ep])
+
+    with pytest.raises(ImportError) as excinfo:
+        get_loader("postgresql://user:pass@host/db")
+
+    assert "Dependencies for the 'postgresql' loader are not installed" in str(excinfo.value)
+
 def test_get_loader_plugin_system(mocker: MockerFixture):
     """
     Tests the plugin-based get_loader function.
@@ -361,6 +382,94 @@ def test_validate_schema_failures(db_engine):
     with pytest.raises(ValueError) as excinfo:
         loader.validate_schema({"icsr_master": bad_pk_table})
     assert "PK mismatch" in str(excinfo.value)
+
+def test_load_normalized_data_failure_logs_status(db_engine):
+    """
+    Tests that if an exception occurs during `load_normalized_data`,
+    the file status is logged as 'failed'.
+    """
+    loader = PostgresLoader(db_engine)
+    loader.create_all_tables()
+
+    # Mock the internal bulk load to raise an error
+    with patch.object(
+        loader, "bulk_load_native", side_effect=Exception("Disk is full")
+    ) as mock_bulk_load, patch.object(
+        loader, "_log_file_status"
+    ) as mock_log_status:
+        buffers = {"icsr_master": io.StringIO("c1,c2\nv1,v2")}
+        row_counts = {"icsr_master": 1}
+
+        with pytest.raises(Exception, match="Disk is full"):
+            loader.load_normalized_data(
+                buffers=buffers,
+                row_counts=row_counts,
+                load_mode="delta",
+                file_path="f.xml",
+                file_hash="h1",
+            )
+
+        # Check that the status was first set to 'running', then to 'failed'
+        assert mock_log_status.call_count == 2
+        # The first call is to set status to 'running'
+        mock_log_status.assert_any_call(
+            mock_bulk_load.call_args.args[0], "f.xml", "h1", "running", 1
+        )
+        # The second call is in the except block to set status to 'failed'
+        mock_log_status.assert_called_with(
+            mock_log_status.call_args.args[0], "f.xml", "h1", "failed"
+        )
+
+
+def test_load_normalized_data_zero_rows(db_engine):
+    """
+    Tests that `load_normalized_data` does not attempt to load data for a
+    table if the row count is zero.
+    """
+    loader = PostgresLoader(db_engine)
+    with patch.object(loader, "bulk_load_native") as mock_bulk_load:
+        loader.load_normalized_data(
+            buffers={"table1": io.StringIO()},
+            row_counts={"table1": 0},
+            load_mode="delta",
+            file_path="f.xml",
+            file_hash="h1",
+        )
+        mock_bulk_load.assert_not_called()
+
+
+def test_load_audit_data_failure_logs_status(db_engine):
+    """
+    Tests that if an exception occurs during `load_audit_data`,
+    the file status is logged as 'failed_audit'.
+    """
+    loader = PostgresLoader(db_engine)
+    loader.create_all_tables()
+
+    with patch.object(
+        loader, "bulk_load_native", side_effect=Exception("Disk is full")
+    ) as mock_bulk_load, patch.object(
+        loader, "_log_file_status"
+    ) as mock_log_status:
+        buffer = io.StringIO("c1,c2\nv1,v2")
+
+        with pytest.raises(Exception, match="Disk is full"):
+            loader.load_audit_data(
+                buffer=buffer,
+                row_count=1,
+                load_mode="delta",
+                file_path="f.xml",
+                file_hash="h1",
+            )
+
+        assert mock_log_status.call_count == 2
+        mock_log_status.assert_any_call(
+            mock_bulk_load.call_args.args[0], "f.xml", "h1", "running_audit", 1
+        )
+        mock_log_status.assert_called_with(
+            mock_log_status.call_args.args[0], "f.xml", "h1", "failed_audit"
+        )
+
 
 def test_get_table_metadata_not_found(db_engine):
     """Test _get_table_metadata for a non-existent table."""

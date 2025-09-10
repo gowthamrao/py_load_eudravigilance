@@ -28,21 +28,23 @@ def run(
     source_uri: Annotated[
         Optional[str],
         typer.Argument(
-            help="URI for the source XML files (e.g., 'data/*.xml', 's3://my-bucket/data/*.xml'). "
-            "Overrides the source_uri in the config file."
+            help="URI for the source XML files (e.g., 'data/*.xml', "
+            "'s3://my-bucket/data/*.xml'). Overrides the source_uri in the config file."
         ),
     ] = None,
     mode: Annotated[
         str,
         typer.Option(
-            help="Load mode: 'delta' for incremental upserts or 'full' for a full refresh."
+            help="Load mode: 'delta' for incremental upserts or 'full' for a full "
+            "refresh."
         ),
     ] = "delta",
     validate: Annotated[
         bool,
         typer.Option(
             "--validate",
-            help="Enable XSD validation for each XML file before processing. Requires xsd_schema_path in config.",
+            help="Enable XSD validation for each XML file before processing. "
+            "Requires xsd_schema_path in config.",
         ),
     ] = False,
     workers: Annotated[
@@ -87,7 +89,8 @@ def run(
 
     if validate and not settings.xsd_schema_path:
         typer.secho(
-            "Error: --validate flag requires 'xsd_schema_path' to be set in the config file.",
+            "Error: --validate flag requires 'xsd_schema_path' to be set in the "
+            "config file.",
             fg=typer.colors.RED,
         )
         raise typer.Exit(code=1)
@@ -196,7 +199,8 @@ def validate(
 
     summary_color = typer.colors.GREEN if invalid_count == 0 else typer.colors.YELLOW
     typer.secho(
-        f"\nValidation summary: {valid_count} file(s) valid, {invalid_count} file(s) invalid.",
+        f"\nValidation summary: {valid_count} file(s) valid, "
+        f"{invalid_count} file(s) invalid.",
         fg=summary_color,
     )
 
@@ -233,7 +237,8 @@ def validate_db_schema(
         loader.validate_schema(db_schema.metadata.tables)
 
         typer.secho(
-            "Schema validation successful. The database schema matches the expected definitions.",
+            "Schema validation successful. The database schema matches the expected "
+            "definitions.",
             fg=typer.colors.GREEN,
         )
     except ValueError as e:

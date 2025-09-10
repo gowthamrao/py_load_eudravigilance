@@ -1,6 +1,13 @@
+import io
+
 import pytest
 import sqlalchemy
-from py_load_eudravigilance.loader import PostgresLoader
+from py_load_eudravigilance.loader import PostgresLoader, get_loader
+from py_load_eudravigilance.parser import parse_icsr_xml, parse_icsr_xml_for_audit
+from py_load_eudravigilance.transformer import (
+    transform_and_normalize,
+    transform_for_audit,
+)
 from sqlalchemy import text
 from testcontainers.postgres import PostgresContainer
 
@@ -44,12 +51,6 @@ def test_create_all_tables(db_engine):
     }
 
     assert expected_tables.issubset(set(tables))
-
-
-import io
-
-from py_load_eudravigilance.parser import parse_icsr_xml
-from py_load_eudravigilance.transformer import transform_and_normalize
 
 
 def test_full_normalized_load(postgres_container, db_engine):
@@ -126,10 +127,6 @@ def test_full_normalized_load(postgres_container, db_engine):
         assert substances[2].drug_seq == 2
 
 
-from py_load_eudravigilance.parser import parse_icsr_xml_for_audit
-from py_load_eudravigilance.transformer import transform_for_audit
-
-
 def test_delta_audit_load(postgres_container, db_engine):
     """
     End-to-end integration test for the 'audit' schema workflow.
@@ -166,7 +163,8 @@ def test_delta_audit_load(postgres_container, db_engine):
         # Just check the first payload for validity
         payload = connection.execute(
             text(
-                "SELECT icsr_payload FROM icsr_audit_log WHERE safetyreportid = 'TEST-CASE-001'"
+                "SELECT icsr_payload FROM icsr_audit_log "
+                "WHERE safetyreportid = 'TEST-CASE-001'"
             )
         ).scalar_one()
         assert isinstance(payload, dict)  # SQLAlchemy auto-deserializes JSONB to dict
@@ -221,7 +219,8 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
         assert case2_initial.is_nullified is False
         assert case2_initial.receiptdate == "20240102"
 
-    # 4. Delta Load: Create a new file with just the nullification message for TEST-CASE-002
+    # 4. Delta Load: Create a new file with just the nullification message
+    # for TEST-CASE-002
     nullification_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
 <ichicsr xmlns="urn:hl7-org:v3">
   <ichicsrMessage>
@@ -261,11 +260,9 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
             text("SELECT * FROM icsr_master WHERE safetyreportid = 'TEST-CASE-002'")
         ).first()
         assert case2_final.is_nullified is True
-        # The receiptdate should NOT have been updated, as per our logic for nullification
+        # The receiptdate should NOT have been updated, as per our logic
+        # for nullification
         assert case2_final.receiptdate == "20240102"
-
-
-from py_load_eudravigilance.loader import get_loader
 
 
 def test_get_loader_plugin_system():
@@ -291,9 +288,7 @@ def test_get_loader_plugin_system():
     with pytest.raises(ValueError) as excinfo:
         get_loader(dsn_mysql)
     # Check that the error message is helpful
-    assert "No registered loader found for database dialect 'mysql'" in str(
-        excinfo.value
-    )
+    assert "No registered loader for dialect 'mysql'" in str(excinfo.value)
     assert "Available loaders: ['postgresql']" in str(excinfo.value)
 
     # 4. Test for an invalid DSN

@@ -16,8 +16,6 @@ from . import schema as db_schema
 from .interfaces import LoaderInterface
 
 try:
-    import psycopg2
-    from psycopg2.extensions import connection as PgConnection
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from sqlalchemy.engine.url import make_url
 except ImportError:
@@ -68,9 +66,10 @@ def get_loader(dsn_or_engine: Any) -> LoaderInterface:
                 ) from e
 
     # If no loader was found after checking all entry points
+    available = [ep.name for ep in loaders]
     raise ValueError(
-        f"No registered loader found for database dialect '{dialect_name}'. "
-        f"Available loaders: {[ep.name for ep in loaders]}"
+        f"No registered loader for dialect '{dialect_name}'. "
+        f"Available loaders: {available}"
     )
 
 
@@ -126,78 +125,58 @@ class PostgresLoader(LoaderInterface):
                     "postgresql+psycopg2://", connect_args=connect_args
                 )
 
-    def validate_schema(self, expected_tables: Dict[str, sqlalchemy.Table]) -> bool:
-        """
-        Validates the live database schema against the expected SQLAlchemy metadata.
-
-        This method checks for:
-        - Missing tables.
-        - Missing columns in existing tables.
-        - Column type mismatches (by class, e.g., String, Integer).
-        - Primary key constraint mismatches.
-
-        Args:
-            expected_tables: A dictionary of SQLAlchemy Table objects representing
-                             the expected schema (e.g., from schema.metadata.tables).
-
-        Returns:
-            True if the schema is valid.
-
-        Raises:
-            ValueError: If any discrepancies are found, containing a detailed
-                        report of all errors.
-        """
-        inspector = sqlalchemy.inspect(self.engine)
-        db_tables = inspector.get_table_names()
+    def _validate_missing_tables(self, inspector, expected_tables, db_tables):
         errors = []
-
-        # 1. Check for missing tables
         for table_name in expected_tables.keys():
             if table_name not in db_tables:
                 errors.append(f"Table '{table_name}' is missing in the database.")
+        return errors
 
+    def _validate_table_columns(self, inspector, table_name, table_obj):
+        errors = []
+        db_columns = {c["name"]: c for c in inspector.get_columns(table_name)}
+        expected_columns = {c.name: c for c in table_obj.columns}
+
+        for col_name, col_obj in expected_columns.items():
+            if col_name not in db_columns:
+                errors.append(f"Table '{table_name}': Missing column '{col_name}'.")
+                continue
+
+            expected_type = col_obj.type
+            db_type = db_columns[col_name]["type"]
+            if not isinstance(db_type, expected_type.__class__):
+                errors.append(
+                    f"Table '{table_name}', Column '{col_name}': Type mismatch. "
+                    f"Expected {expected_type.__class__.__name__}, "
+                    f"found {db_type.__class__.__name__}."
+                )
+        return errors
+
+    def _validate_primary_keys(self, inspector, table_name, table_obj):
+        errors = []
+        db_pk_cols = inspector.get_pk_constraint(table_name)["constrained_columns"]
+        expected_pk_cols = [c.name for c in table_obj.primary_key.columns]
+        if set(db_pk_cols) != set(expected_pk_cols):
+            errors.append(
+                f"Table '{table_name}': PK mismatch. "
+                f"Expected {sorted(expected_pk_cols)}, found {sorted(db_pk_cols)}."
+            )
+        return errors
+
+    def validate_schema(self, expected_tables: Dict[str, sqlalchemy.Table]) -> bool:
+        inspector = sqlalchemy.inspect(self.engine)
+        db_tables = inspector.get_table_names()
+        errors = self._validate_missing_tables(inspector, expected_tables, db_tables)
         if errors:
-            # If tables are missing, no point in checking their columns
             raise ValueError("Schema validation failed:\n" + "\n".join(errors))
 
-        # 2. Check columns and PKs for existing tables
         for table_name, table_obj in expected_tables.items():
-            db_columns = {c["name"]: c for c in inspector.get_columns(table_name)}
-            expected_columns = {c.name: c for c in table_obj.columns}
-
-            # Check for missing columns in the database
-            for col_name, col_obj in expected_columns.items():
-                if col_name not in db_columns:
-                    errors.append(f"Table '{table_name}': Missing column '{col_name}'.")
-                    continue  # No point checking type if it's missing
-
-                # Check column type compatibility (by class)
-                expected_type = col_obj.type
-                db_type = db_columns[col_name]["type"]
-                if not isinstance(db_type, expected_type.__class__):
-                    errors.append(
-                        f"Table '{table_name}', Column '{col_name}': Type mismatch. "
-                        f"Expected a subtype of {expected_type.__class__.__name__}, "
-                        f"but found {db_type.__class__.__name__}."
-                    )
-
-            # Check for extra columns in DB (log as warning, not error)
-            for col_name in db_columns.keys():
-                if col_name not in expected_columns:
-                    print(
-                        f"Warning: Table '{table_name}' has an extra column "
-                        f"'{col_name}' not defined in the schema model."
-                    )
-
-            # Check primary key
-            db_pk_cols = inspector.get_pk_constraint(table_name)["constrained_columns"]
-            expected_pk_cols = [c.name for c in table_obj.primary_key.columns]
-
-            if set(db_pk_cols) != set(expected_pk_cols):
-                errors.append(
-                    f"Table '{table_name}': Primary key mismatch. "
-                    f"Expected {sorted(expected_pk_cols)}, found {sorted(db_pk_cols)}."
-                )
+            errors.extend(
+                self._validate_table_columns(inspector, table_name, table_obj)
+            )
+            errors.extend(
+                self._validate_primary_keys(inspector, table_name, table_obj)
+            )
 
         if errors:
             raise ValueError(

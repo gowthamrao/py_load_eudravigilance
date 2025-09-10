@@ -3,7 +3,7 @@ name = "py_load_eudravigilance"
 version = "0.1.0"
 description = "High-performance ETL for EudraVigilance ICSRs into relational databases."
 authors = ["Gowtham Rao <rao@ohdsi.org>"]
-license = "MIT"
+license = "Apache-2.0"
 readme = "README.md"
 packages = [{include = "py_load_eudravigilance", from = "src"}]
 

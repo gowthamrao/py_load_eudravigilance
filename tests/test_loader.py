@@ -10,6 +10,7 @@ from py_load_eudravigilance.transformer import (
 )
 from sqlalchemy import text
 from testcontainers.postgres import PostgresContainer
+from pytest_mock import MockerFixture
 
 
 @pytest.fixture(scope="module")
@@ -265,7 +266,7 @@ def test_delta_load_with_nullification(postgres_container, db_engine):
         assert case2_final.receiptdate == "20240102"
 
 
-def test_get_loader_plugin_system():
+def test_get_loader_plugin_system(mocker: MockerFixture):
     """
     Tests the plugin-based get_loader function.
     This test relies on the entry point being correctly configured in pyproject.toml.
@@ -295,3 +296,74 @@ def test_get_loader_plugin_system():
     with pytest.raises(ValueError) as excinfo:
         get_loader("not-a-valid-dsn")
     assert "Could not determine database dialect from DSN" in str(excinfo.value)
+
+    # 5. Test for entry point loading error
+    mocker.patch(
+        "importlib.metadata.entry_points", side_effect=Exception("EP loading failed")
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        get_loader(dsn)
+    assert "Could not load entry points: EP loading failed" in str(excinfo.value)
+
+    # 6. Test for loader instantiation error
+    class BadLoader:
+        def __init__(self, dsn):
+            raise ValueError("bad loader")
+
+    mock_ep = mocker.MagicMock()
+    mock_ep.name = "postgresql"
+    mock_ep.load.return_value = BadLoader
+    mocker.patch("importlib.metadata.entry_points", return_value=[mock_ep])
+    with pytest.raises(RuntimeError) as excinfo:
+        get_loader(dsn)
+    assert "Failed to instantiate loader for dialect 'postgresql'" in str(excinfo.value)
+
+
+def test_postgres_loader_init_with_simple_dsn():
+    """Test PostgresLoader with a simple DSN string."""
+    loader = PostgresLoader("dbname=test user=user")
+    assert loader.engine is not None
+
+
+def test_prepare_load_unknown_mode(db_engine):
+    """Test prepare_load with an unknown load mode."""
+    loader = PostgresLoader(db_engine)
+    with db_engine.connect() as conn:
+        with pytest.raises(ValueError):
+            loader.prepare_load(conn, "icsr_master", "unknown_mode")
+
+
+def test_validate_schema_failures(db_engine):
+    """Test schema validation failures."""
+    loader = PostgresLoader(db_engine)
+    loader.create_all_tables()
+
+    # Test missing table
+    with pytest.raises(ValueError) as excinfo:
+        loader.validate_schema({"missing_table": None})
+    assert "Table 'missing_table' is missing" in str(excinfo.value)
+
+    # Test missing column
+    from sqlalchemy import Table, Column, Integer, MetaData
+    bad_table = Table("icsr_master", MetaData(), Column("missing_col", Integer))
+    with pytest.raises(ValueError) as excinfo:
+        loader.validate_schema({"icsr_master": bad_table})
+    assert "Missing column 'missing_col'" in str(excinfo.value)
+
+    # Test wrong column type
+    bad_type_table = Table("icsr_master", MetaData(), Column("safetyreportid", Integer))
+    with pytest.raises(ValueError) as excinfo:
+        loader.validate_schema({"icsr_master": bad_type_table})
+    assert "Type mismatch" in str(excinfo.value)
+
+    # Test wrong PK
+    bad_pk_table = Table("icsr_master", MetaData(), Column("safetyreportid", Integer, primary_key=True), Column("extra_pk", Integer, primary_key=True))
+    with pytest.raises(ValueError) as excinfo:
+        loader.validate_schema({"icsr_master": bad_pk_table})
+    assert "PK mismatch" in str(excinfo.value)
+
+def test_get_table_metadata_not_found(db_engine):
+    """Test _get_table_metadata for a non-existent table."""
+    loader = PostgresLoader(db_engine)
+    with pytest.raises(ValueError):
+        loader._get_table_metadata("non_existent_table")

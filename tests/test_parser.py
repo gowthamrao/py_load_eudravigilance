@@ -166,3 +166,60 @@ def test_element_to_dict_conversion():
 
     # Assert that the result matches the expected structure
     assert result_dict == expected_dict
+
+
+import io
+from unittest.mock import patch, MagicMock
+
+from py_load_eudravigilance.parser import validate_xml_with_xsd
+
+
+def test_validate_xml_uses_streaming_parser(tmp_path):
+    """
+    Tests that `validate_xml_with_xsd` uses a streaming approach.
+
+    It verifies this by:
+    1. Asserting that `etree.parse` is only called for the small XSD schema,
+       not the main (potentially large) XML data file.
+    2. Asserting that the `parser.feed()` method of a streaming parser IS called,
+       proving the streaming code path is executed.
+    """
+    # Create dummy XML and XSD files
+    xml_file = tmp_path / "test.xml"
+    xml_file.write_text("<root/>")
+    xsd_file = tmp_path / "test.xsd"
+    xsd_file.write_text(
+        """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+           <xs:element name="root"/>
+           </xs:schema>"""
+    )
+
+    # We patch `etree.parse` and `etree.XMLParser` itself.
+    with patch("py_load_eudravigilance.parser.etree.parse") as mock_etree_parse, \
+         patch("py_load_eudravigilance.parser.etree.XMLParser") as mock_xml_parser:
+
+        # The XMLParser class will now return a mock instance.
+        mock_parser_instance = mock_xml_parser.return_value
+        # Make the parse mock return a valid, minimal ElementTree object
+        # so that etree.XMLSchema() doesn't fail.
+        minimal_xsd_doc = etree.fromstring(
+            """<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+               <xs:element name="root"/>
+               </xs:schema>"""
+        )
+        mock_etree_parse.return_value = etree.ElementTree(minimal_xsd_doc)
+
+        with open(xml_file, "rb") as f:
+            validate_xml_with_xsd(f, str(xsd_file))
+
+        # 1. Assert that `etree.parse` was called for the XSD file.
+        mock_etree_parse.assert_called_once_with(str(xsd_file))
+
+        # 2. Assert that an XMLParser was instantiated with our schema.
+        mock_xml_parser.assert_called_once()
+
+        # 3. Assert that the `feed` method was called on the parser instance.
+        mock_parser_instance.feed.assert_called()
+
+        # 4. Assert that the `close` method was called to finalize parsing.
+        mock_parser_instance.close.assert_called_once()

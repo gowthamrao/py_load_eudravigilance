@@ -231,7 +231,8 @@ from typing import Tuple, List
 
 def validate_xml_with_xsd(xml_source: IO[bytes], xsd_path: str) -> Tuple[bool, List[str]]:
     """
-    Validates an XML source against a given XSD schema file.
+    Validates an XML source against a given XSD schema file using a streaming
+    parser to ensure low memory usage.
 
     Args:
         xml_source: A file-like object containing the XML data.
@@ -243,19 +244,30 @@ def validate_xml_with_xsd(xml_source: IO[bytes], xsd_path: str) -> Tuple[bool, L
         - A list of validation error messages, or an empty list if valid.
     """
     try:
-        # Load the XSD schema
+        # Load the XSD schema. XSD files are assumed to be small and can be
+        # parsed into memory directly.
         xmlschema_doc = etree.parse(xsd_path)
         xmlschema = etree.XMLSchema(xmlschema_doc)
 
-        # Load and validate the XML document
-        xml_doc = etree.parse(xml_source)
-        xmlschema.assertValid(xml_doc)
+        # Create a streaming parser with the schema attached.
+        parser = etree.XMLParser(schema=xmlschema)
+
+        # Feed the XML source to the parser in chunks.
+        # This avoids loading the entire XML file into memory.
+        # The parser will raise an error as soon as it finds an invalid chunk.
+        for chunk in iter(lambda: xml_source.read(16384), b""):
+            parser.feed(chunk)
+
+        # Finalize the parsing. If the document is invalid, this will raise.
+        parser.close()
         return True, []
-    except etree.DocumentInvalid as e:
-        return False, [str(e) for e in xmlschema.error_log]
+
     except etree.XMLSyntaxError as e:
-        return False, [f"XML Syntax Error: {e}"]
+        # This exception is raised by the streaming parser for both syntax
+        # errors and schema validation failures.
+        return False, [str(e)]
     except Exception as e:
+        # Catch any other unexpected errors.
         return False, [f"An unexpected error occurred: {e}"]
 
 

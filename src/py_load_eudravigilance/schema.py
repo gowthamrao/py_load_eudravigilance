@@ -151,3 +151,12 @@ etl_file_history = sqlalchemy.Table(
     ),
     sqlalchemy.Column("rows_processed", sqlalchemy.Integer),
 )
+
+
+def create_all_tables(engine):
+    """
+    Creates all defined tables in the schema.py file against the target
+    database. This is an idempotent operation.
+    """
+    metadata.create_all(engine)
+    print("All tables created or already exist.")

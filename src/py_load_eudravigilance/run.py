@@ -120,8 +120,9 @@ def filter_completed_files(files: list[str], settings: Settings) -> dict[str, st
         return {}
 
     try:
-        db_loader = loader.get_loader(settings.database.dsn)
-        completed_hashes = db_loader.get_completed_file_hashes()
+        db_loader = loader.get_loader(settings.database.model_dump())
+        with db_loader.connect() as connection:
+            completed_hashes = db_loader.get_completed_file_hashes(connection)
         logger.info(f"Found {len(completed_hashes)} completed files in the database.")
     except Exception as e:
         logger.error(
@@ -203,37 +204,60 @@ def _process_normalized_file(
     f, db_loader, file_path, file_hash, mode
 ) -> Tuple[bool, str]:
     """Helper to process a file for the 'normalized' schema."""
+    from .parser import InvalidICSRError
+
     parsed_stream = parser.parse_icsr_xml(f)
-    buffers, counts, errors = transformer.transform_and_normalize(parsed_stream)
+    items = list(item for item in parsed_stream)
+    safetyreportids = [
+        item["safetyreportid"]
+        for item in items
+        if not isinstance(item, InvalidICSRError)
+    ]
+
+    buffers, counts, errors = transformer.transform_and_normalize(iter(items))
 
     if errors:
         logger.warning(
             f"Encountered {len(errors)} parsing errors in {file_path}. See quarantine."
         )
-        # Future enhancement: send errors to a quarantine queue/location
 
-    db_loader.load_normalized_data(
-        buffers=buffers,
-        row_counts=counts,
-        load_mode=mode,
-        file_path=file_path,
-        file_hash=file_hash,
-    )
-    total_rows = sum(counts.values())
+    with db_loader.connect() as connection:
+        if safetyreportids:
+            for table_name in [
+                "patient_characteristics",
+                "reactions",
+                "drugs",
+                "drug_substances",
+                "tests_procedures",
+                "case_summary_narrative",
+            ]:
+                table_obj = db_loader.get_table_schema(table_name)
+                stmt = table_obj.delete().where(
+                    table_obj.c.safetyreportid.in_(safetyreportids)
+                )
+                connection.execute(stmt)
+
+        total_rows = 0
+        for table_name, buffer in buffers.items():
+            if counts.get(table_name, 0) > 0:
+                import pandas as pd
+
+                df = pd.read_csv(buffer)
+                db_loader.load_dataframe(df, table_name, connection)
+                total_rows += len(df)
     return True, f"Loaded {total_rows} rows into normalized schema."
 
 
 def _process_audit_file(f, db_loader, file_path, file_hash, mode) -> Tuple[bool, str]:
     """Helper to process a file for the 'audit' schema."""
+    import pandas as pd
+
     parsed_stream = parser.parse_icsr_xml_for_audit(f)
     buffer, count = transformer.transform_for_audit(parsed_stream)
-    db_loader.load_audit_data(
-        buffer=buffer,
-        row_count=count,
-        load_mode=mode,
-        file_path=file_path,
-        file_hash=file_hash,
-    )
+    if count > 0:
+        df = pd.read_csv(buffer)
+        with db_loader.connect() as connection:
+            db_loader.load_dataframe(df, "icsr_audit_log", connection)
     return True, f"Loaded {count} records into audit schema."
 
 
@@ -296,7 +320,7 @@ def process_file(
     logger.info(f"Worker started for file: {file_path}")
     try:
         # The loader must be instantiated within the worker process
-        db_loader = loader.get_loader(settings.database.dsn)
+        db_loader = loader.get_loader(settings.database.model_dump())
 
         # --- First Pass: Optional XSD Validation ---
         if validate:
@@ -326,18 +350,27 @@ def process_file(
                 logger.info(f"XSD validation successful for {file_path}.")
 
         # --- Second Pass: Parsing and Loading ---
+        success, message = (False, "Unknown schema type")
         with fsspec.open(file_path, "rb") as f:
             if settings.schema_type == "normalized":
-                return _process_normalized_file(
+                success, message = _process_normalized_file(
                     f, db_loader, file_path, file_hash, mode
                 )
             elif settings.schema_type == "audit":
-                return _process_audit_file(f, db_loader, file_path, file_hash, mode)
+                success, message = _process_audit_file(
+                    f, db_loader, file_path, file_hash, mode
+                )
             else:
                 # This case should ideally be caught earlier, but serves as a safeguard
                 raise ValueError(
                     f"Invalid schema_type in worker: {settings.schema_type}"
                 )
+
+        if success:
+            with db_loader.connect() as connection:
+                db_loader.add_file_to_history(file_path, file_hash, connection)
+
+        return success, message
 
     except Exception as e:
         logger.error(f"Failed to process {file_path}: {e}", exc_info=True)

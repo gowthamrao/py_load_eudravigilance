@@ -35,7 +35,10 @@ def deep_merge(source: Dict, destination: Dict) -> Dict:
 class DatabaseConfig(BaseModel):
     """Pydantic model for database connection settings."""
 
-    dsn: str = Field(..., description="The full database connection string (DSN).")
+    type: str = Field(..., description="The type of database loader to use.")
+    config: Dict[str, Any] = Field(
+        ..., description="The configuration dictionary for the specified loader."
+    )
 
 
 # This is the final, strict configuration model that will be used by the application.
@@ -68,7 +71,7 @@ class _EnvSettings(BaseSettings):
         case_sensitive=False,
     )
 
-    database: Optional[DatabaseConfig] = None
+    database: Optional[Dict[str, Any]] = None
     source_uri: Optional[str] = None
     schema_type: Optional[str] = None
     quarantine_uri: Optional[str] = None

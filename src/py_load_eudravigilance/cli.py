@@ -132,8 +132,7 @@ def init_db(
     typer.echo("Initializing database...")
     try:
         settings = load_config(path=str(config_file))
-        # The DSN is now passed to the loader, not the engine directly
-        loader = get_loader(settings.database.dsn)
+        loader = get_loader(settings.database.model_dump())
         loader.create_all_tables()
         typer.secho(
             "Database initialization complete. All tables created.",
@@ -230,7 +229,7 @@ def validate_db_schema(
     typer.echo("Connecting to database for schema validation...")
     try:
         settings = load_config(path=str(config_file))
-        loader = get_loader(settings.database.dsn)
+        loader = get_loader(settings.database.model_dump())
 
         typer.echo("Running schema validation...")
         # We pass the tables dictionary from our central schema definition

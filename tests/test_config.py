@@ -10,7 +10,10 @@ from py_load_eudravigilance.config import Settings, load_config
 def config_file(tmp_path: Path) -> Path:
     """Creates a dummy config.yaml file for testing."""
     config_content = {
-        "database": {"dsn": "dsn_from_file"},
+        "database": {
+            "type": "postgres",
+            "config": {"dsn": "dsn_from_file"},
+        },
         "source_uri": "uri_from_file",
         "schema_type": "audit",
     }
@@ -27,7 +30,8 @@ def test_load_from_yaml_file(config_file: Path):
     """
     settings = load_config(path=str(config_file))
     assert isinstance(settings, Settings)
-    assert settings.database.dsn == "dsn_from_file"
+    assert settings.database.type == "postgres"
+    assert settings.database.config["dsn"] == "dsn_from_file"
     assert settings.source_uri == "uri_from_file"
     assert settings.schema_type == "audit"
 
@@ -38,14 +42,18 @@ def test_env_vars_override_yaml(config_file: Path, monkeypatch):
     This verifies the source priority.
     """
     # Set environment variables that correspond to the Pydantic model fields
-    monkeypatch.setenv("PY_LOAD_EUDRAVIGILANCE_DATABASE__DSN", "dsn_from_env")
+    monkeypatch.setenv("PY_LOAD_EUDRAVIGILANCE_DATABASE__TYPE", "redshift")
+    monkeypatch.setenv(
+        "PY_LOAD_EUDRAVIGILANCE_DATABASE__CONFIG__HOST", "host_from_env"
+    )
     monkeypatch.setenv("PY_LOAD_EUDRAVIGILANCE_SOURCE_URI", "uri_from_env")
 
     # Load the configuration
     settings = load_config(path=str(config_file))
 
     # Assert that the environment variable values took precedence
-    assert settings.database.dsn == "dsn_from_env"
+    assert settings.database.type == "redshift"
+    assert settings.database.config["host"] == "host_from_env"
     assert settings.source_uri == "uri_from_env"
     # This value was not overridden, so it should come from the file
     assert settings.schema_type == "audit"
@@ -56,7 +64,10 @@ def test_load_from_env_only(monkeypatch):
     Tests that the configuration can be loaded entirely from environment
     variables when no config file is present.
     """
-    monkeypatch.setenv("PY_LOAD_EUDRAVIGILANCE_DATABASE__DSN", "dsn_from_env_only")
+    monkeypatch.setenv("PY_LOAD_EUDRAVIGILANCE_DATABASE__TYPE", "bigquery")
+    monkeypatch.setenv(
+        "PY_LOAD_EUDRAVIGILANCE_DATABASE__CONFIG__PROJECT", "project_from_env"
+    )
     monkeypatch.setenv("PY_LOAD_EUDRAVIGILANCE_SCHEMA_TYPE", "audit")
 
     # Use a path that does not exist
@@ -64,7 +75,8 @@ def test_load_from_env_only(monkeypatch):
     assert not os.path.exists(non_existent_path)
 
     settings = load_config(path=non_existent_path)
-    assert settings.database.dsn == "dsn_from_env_only"
+    assert settings.database.type == "bigquery"
+    assert settings.database.config["project"] == "project_from_env"
     # This was not set, so it should use the model's default
     assert settings.source_uri is None
     # This was set in the environment
@@ -73,18 +85,21 @@ def test_load_from_env_only(monkeypatch):
 
 def test_missing_required_field_raises_error(tmp_path: Path, monkeypatch):
     """
-    Tests that a validation error is raised if a required field (like DSN)
+    Tests that a validation error is raised if a required field (like database type)
     is not provided in any source.
     """
     # Create an empty config file
-    empty_config = tmp_path / "empty.yaml"
-    empty_config.touch()
-
-    # Ensure the relevant env var is not set
-    monkeypatch.delenv("PY_LOAD_EUDRAVIGILANCE_DATABASE__DSN", raising=False)
+    config_content = {
+        "database": {
+            "config": {"dsn": "dsn_from_file"},
+        },
+    }
+    config_path = tmp_path / "config.yaml"
+    with open(config_path, "w") as f:
+        yaml.dump(config_content, f)
 
     with pytest.raises(ValueError, match="Configuration validation error"):
-        load_config(path=str(empty_config))
+        load_config(path=str(config_path))
 
 
 def test_invalid_schema_type_raises_error(config_file: Path, monkeypatch):

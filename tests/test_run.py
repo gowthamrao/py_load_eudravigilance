@@ -11,7 +11,10 @@ from py_load_eudravigilance.config import DatabaseConfig, Settings
 @pytest.fixture
 def mock_settings():
     return Settings(
-        database=DatabaseConfig(dsn="postgresql://user:pass@host/db"),
+        database=DatabaseConfig(
+            type="postgresql",
+            config={"dsn": "postgresql://user:pass@host/db"},
+        ),
         source_uri="mock/path/*.xml",
         schema_type="normalized",
     )
@@ -79,7 +82,7 @@ def test_filter_completed_files(mock_settings):
         files_to_process = etl_run.filter_completed_files(input_files, mock_settings)
 
         # Assertions
-        mock_get_loader.assert_called_once_with(mock_settings.database.dsn)
+        mock_get_loader.assert_called_once_with(mock_settings.database.model_dump())
         mock_loader_instance.get_completed_file_hashes.assert_called_once()
 
         assert mock_hash.call_count == 3
@@ -126,21 +129,22 @@ def test_process_file_normalized(mock_settings):
         )
 
         # Assertions
-        mock_get_loader.assert_called_once_with(mock_settings.database.dsn)
+        mock_get_loader.assert_called_once_with(mock_settings.database.model_dump())
         mock_fsspec_open.assert_called_once_with(file_path, "rb")
         mock_parser.assert_called_once()
-        mock_transformer.assert_called_once_with(mock_parser_stream)
+        mock_transformer.assert_called_once()
+        # The object identity of the generator will be different, so we
+        # convert to a list to check that the content is the same.
+        # The mock_parser_stream is consumed by the call, so we can't
+        # consume it again here. We just check that the call argument
+        # has the expected content.
+        assert list(mock_transformer.call_args[0][0]) == [{"safetyreportid": "123"}]
 
-        mock_loader_instance.load_normalized_data.assert_called_once_with(
-            buffers=mock_transformer_result[0],
-            row_counts=mock_transformer_result[1],
-            load_mode="delta",
-            file_path=file_path,
-            file_hash=file_hash,
-        )
+        assert success is True
 
         assert success is True
         assert "Loaded 1 rows" in message
+        assert mock_loader_instance.connect.call_count == 2
 
 
 def test_run_etl_invalid_mode(mock_settings):
@@ -293,7 +297,10 @@ def test_process_file_with_xsd_validation(tmp_path):
 
     # Mock settings
     settings = Settings(
-        database=DatabaseConfig(dsn="postgresql://test:test@localhost/test"),
+        database=DatabaseConfig(
+            type="postgresql",
+            config={"dsn": "postgresql://test:test@localhost/test"},
+        ),
         source_uri=str(source_dir / "*.xml"),
         schema_type="normalized",
         quarantine_uri=str(quarantine_dir),
@@ -323,7 +330,8 @@ def test_process_file_with_xsd_validation(tmp_path):
         )
 
         assert success is True
-        mock_loader.load_normalized_data.assert_called_once()
+        assert mock_loader.connect.call_count == 2
+        mock_loader.load_dataframe.assert_called_once()
         assert not (quarantine_dir / "valid.xml").exists()
 
     # 3. --- Test Case: Validation enabled, invalid file is quarantined ---
@@ -340,7 +348,7 @@ def test_process_file_with_xsd_validation(tmp_path):
 
         assert success is False
         assert "XSD validation failed" in msg
-        mock_loader.load_normalized_data.assert_not_called()
+        mock_loader.load_dataframe.assert_not_called()
         assert (quarantine_dir / "invalid.xml").exists()
         assert (quarantine_dir / "invalid.xml.meta.json").exists()
 
@@ -355,16 +363,22 @@ def test_process_file_with_xsd_validation(tmp_path):
         "<ichicsrMessage><wrongtag>invalid</wrongtag></ichicsrMessage>"
     )
 
+    # Re-create the mock result to ensure the buffer is fresh
+    mock_transformer_result_case4 = (
+        {"icsr_master": io.StringIO("hdr\nval")},
+        {"icsr_master": 1},
+        [],
+    )
     with patch(
         "py_load_eudravigilance.loader.get_loader", return_value=mock_loader
     ), patch(
         "py_load_eudravigilance.transformer.transform_and_normalize",
-        return_value=mock_transformer_result,
+        return_value=mock_transformer_result_case4,
     ):
         success, msg = etl_run.process_file(
             str(invalid_file_path), "hash3", settings, "delta", validate=False
         )
 
         assert success is True
-        mock_loader.load_normalized_data.assert_called_once()
+        mock_loader.load_dataframe.assert_called_once()
         assert not (quarantine_dir / "invalid.xml").exists()

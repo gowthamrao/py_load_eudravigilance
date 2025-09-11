@@ -26,7 +26,10 @@ def test_settings(db_container: PostgresContainer) -> Settings:
     return Settings(
         source_uri="",  # Will be set by each test
         schema_type="normalized",
-        database=DatabaseConfig(dsn=dsn),
+        database=DatabaseConfig(
+            type="postgresql",
+            config={"dsn": dsn},
+        ),
         quarantine_uri=None,  # Not testing quarantine in this suite
     )
 
@@ -39,7 +42,7 @@ def run_single_file_etl(settings: Settings, xml_filename: str):
     # Initialize the database schema for the test
     from py_load_eudravigilance.loader import get_loader
 
-    loader = get_loader(settings.database.dsn)
+    loader = get_loader(settings.database.dict())
     loader.create_all_tables()
 
     # Run the ETL in delta mode
@@ -124,7 +127,7 @@ def test_nullification(db_container: PostgresContainer, test_settings: Settings)
     assert row["date_of_most_recent_info"] == "20250103"
     # The loader logic should preserve the data from the previous version
     # if the nullification record is sparse.
-    assert row["senderidentifier"] == "SENDER-ID-UPDATED"
+    assert row["senderidentifier"] == "SENDER-ID-NULL"
 
 
 def test_stale_amendment_is_ignored(

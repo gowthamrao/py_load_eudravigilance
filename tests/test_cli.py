@@ -4,6 +4,7 @@ End-to-end integration tests for the CLI application.
 import pytest
 import yaml
 from py_load_eudravigilance.cli import app
+from py_load_eudravigilance.config import DatabaseConfig
 from sqlalchemy import create_engine, text
 from testcontainers.postgres import PostgresContainer
 from typer.testing import CliRunner
@@ -85,7 +86,10 @@ def test_cli_integration_flow(postgres_container, db_engine, tmp_path):
     # Use the connection URL from the container fixture for the config
     dsn = postgres_container.get_connection_url()
     config_data = {
-        "database": {"dsn": dsn},
+        "database": {
+            "type": "postgresql",
+            "config": {"dsn": dsn},
+        },
         "source_uri": str(valid_xml_path),
         "schema_type": "normalized",
     }
@@ -157,7 +161,10 @@ def test_cli_dlq_flow(postgres_container, tmp_path):
 
     dsn = postgres_container.get_connection_url()
     config_data = {
-        "database": {"dsn": dsn},
+        "database": {
+            "type": "postgresql",
+            "config": {"dsn": dsn},
+        },
         "source_uri": f"{str(source_data_path)}/*.xml",
         "quarantine_uri": str(quarantine_path),
     }
@@ -286,7 +293,10 @@ def test_cli_run_with_validation(postgres_container, db_engine, tmp_path):
 
     dsn = postgres_container.get_connection_url()
     config_data = {
-        "database": {"dsn": dsn},
+        "database": {
+            "type": "postgresql",
+            "config": {"dsn": dsn},
+        },
         "source_uri": f"{str(source_data_path)}/*.xml",
         "quarantine_uri": str(quarantine_path),
         "xsd_schema_path": str(schema_path),
@@ -348,7 +358,9 @@ def test_run_no_source_uri(mocker: MockerFixture):
 
     with runner.isolated_filesystem():
         with open("config.yml", "w") as f:
-            f.write("database:\n  dsn: dummy_dsn")
+            f.write(
+                "database:\n  type: postgresql\n  config:\n    dsn: dummy_dsn"
+            )
         result = runner.invoke(app, ["run", "--config", "config.yml"])
 
     assert result.exit_code == 1
@@ -364,7 +376,9 @@ def test_run_validate_no_schema_path(mocker: MockerFixture):
 
     with runner.isolated_filesystem():
         with open("config.yml", "w") as f:
-            f.write("database:\n  dsn: dummy_dsn")
+            f.write(
+                "database:\n  type: postgresql\n  config:\n    dsn: dummy_dsn"
+            )
         result = runner.invoke(app, ["run", "--config", "config.yml", "--validate"])
 
     assert result.exit_code == 1
@@ -382,7 +396,9 @@ def test_run_etl_exception(mocker: MockerFixture):
 
     with runner.isolated_filesystem():
         with open("config.yml", "w") as f:
-            f.write("database:\n  dsn: dummy_dsn")
+            f.write(
+                "database:\n  type: postgresql\n  config:\n    dsn: dummy_dsn"
+            )
         result = runner.invoke(app, ["run", "--config", "config.yml"])
 
     assert result.exit_code == 1
@@ -398,7 +414,9 @@ def test_init_db_failure(mocker: MockerFixture):
 
     with runner.isolated_filesystem():
         with open("config.yml", "w") as f:
-            f.write("database:\n  dsn: dummy_dsn")
+            f.write(
+                "database:\n  type: postgresql\n  config:\n    dsn: dummy_dsn"
+            )
 
         result = runner.invoke(app, ["init-db", "--config", "config.yml"])
 
@@ -442,11 +460,21 @@ def test_validate_db_schema_value_error(mocker: MockerFixture):
     mock_loader = mocker.MagicMock()
     mock_loader.validate_schema.side_effect = ValueError("Schema mismatch")
     mocker.patch("py_load_eudravigilance.cli.get_loader", return_value=mock_loader)
-    mocker.patch("py_load_eudravigilance.cli.load_config")
+    mocker.patch(
+        "py_load_eudravigilance.cli.load_config",
+        return_value=mocker.MagicMock(
+            database=DatabaseConfig(
+                type="postgresql",
+                config={"dsn": "postgresql://user:pass@host/db"},
+            )
+        ),
+    )
 
     with runner.isolated_filesystem():
         with open("config.yml", "w") as f:
-            f.write("database:\n  dsn: dummy_dsn")
+            f.write(
+                "database:\n  type: postgresql\n  config:\n    dsn: dummy_dsn"
+            )
         result = runner.invoke(app, ["validate-db-schema", "-c", "config.yml"])
 
     assert result.exit_code == 1
@@ -463,7 +491,9 @@ def test_validate_db_schema_unexpected_error(mocker: MockerFixture):
 
     with runner.isolated_filesystem():
         with open("config.yml", "w") as f:
-            f.write("database:\n  dsn: dummy_dsn")
+            f.write(
+                "database:\n  type: postgresql\n  config:\n    dsn: dummy_dsn"
+            )
         result = runner.invoke(app, ["validate-db-schema", "-c", "config.yml"])
 
     assert result.exit_code == 1

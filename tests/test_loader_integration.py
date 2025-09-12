@@ -446,3 +446,74 @@ def test_drugs_table_loading(loader):
         drug2 = result[1]._asdict()
         assert drug2["medicinalproduct"] == "Test-Drug-B"
         assert drug2["drugdosagetext"] == "Two pills, twice a day"
+
+
+def test_stale_icsr_nullification_is_processed_correctly(loader):
+    """
+    Tests that a "stale" nullification (a nullification message with an
+    older version date than the existing record) correctly nullifies the
+    record without overwriting newer data.
+    """
+    # 1. Ensure all application tables are created
+    loader.create_all_tables()
+
+    # 2. Define and load the initial, newer version of an ICSR
+    report_id = "TEST-STALE-NULL-01"
+    initial_csv = (
+        "safetyreportid,date_of_most_recent_info,receiptdate,is_nullified,senderidentifier\n"
+        f"{report_id},20250302,20250301,False,NewerSender\n"
+    )
+    initial_buffers = {"icsr_master": StringIO(initial_csv)}
+    initial_counts = {"icsr_master": 1}
+
+    loader.load_normalized_data(
+        buffers=initial_buffers,
+        row_counts=initial_counts,
+        load_mode="delta",
+        file_path="/fake/stale_null/1",
+        file_hash="hash_stale_null_1",
+    )
+
+    # 3. Verify the initial state
+    with loader.engine.connect() as conn:
+        result = conn.execute(
+            sqlalchemy.text(
+                f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
+        ).first()
+        assert result is not None
+        assert result._asdict()["is_nullified"] is False
+        assert result._asdict()["senderidentifier"] == "NewerSender"
+        assert result._asdict()["date_of_most_recent_info"] == "20250302"
+
+    # 4. Define the stale nullification record (older date, is_nullified=True)
+    stale_nullify_csv = (
+        "safetyreportid,date_of_most_recent_info,receiptdate,is_nullified,senderidentifier\n"
+        f"{report_id},20250301,20250301,True,OlderSender\n"
+    )
+    stale_nullify_buffers = {"icsr_master": StringIO(stale_nullify_csv)}
+    stale_nullify_counts = {"icsr_master": 1}
+
+    # 5. Load the stale nullification record
+    loader.load_normalized_data(
+        buffers=stale_nullify_buffers,
+        row_counts=stale_nullify_counts,
+        load_mode="delta",
+        file_path="/fake/stale_null/2",
+        file_hash="hash_stale_null_2",
+    )
+
+    # 6. Verify the final state
+    with loader.engine.connect() as conn:
+        result = conn.execute(
+            sqlalchemy.text(
+                f"SELECT * FROM icsr_master WHERE safetyreportid = '{report_id}'"
+            )
+        ).first()
+        assert result is not None
+        # The record should be nullified.
+        assert result._asdict()["is_nullified"] is True
+        # The version key should NOT have been updated to the older date.
+        assert result._asdict()["date_of_most_recent_info"] == "20250302"
+        # Other data should NOT have been overwritten by the stale record.
+        assert result._asdict()["senderidentifier"] == "NewerSender"

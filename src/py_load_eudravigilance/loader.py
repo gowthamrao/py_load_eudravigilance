@@ -273,8 +273,20 @@ class PostgresLoader(LoaderInterface):
                     # The nullification flag should always be updated from the source.
                     update_dict[col.name] = excluded[col.name]
                 elif col.name == version_key:
-                    # The version key should always be updated from the incoming record
-                    update_dict[col.name] = excluded[col.name]
+                    if has_nullified_col:
+                        # If the table supports nullification, we need to handle
+                        # the case where a nullification might be stale.
+                        update_dict[col.name] = sqlalchemy.case(
+                            (
+                                excluded.is_nullified,
+                                sqlalchemy.func.greatest(col, excluded[col.name]),
+                            ),
+                            else_=excluded[col.name],
+                        )
+                    else:
+                        # If the table doesn't support nullification, the version
+                        # key update is simpler and protected by the WHERE clause.
+                        update_dict[col.name] = excluded[col.name]
                 elif has_nullified_col:
                     # For all other columns, keep the existing value if the new
                     # record is a nullification; otherwise, take the new value.

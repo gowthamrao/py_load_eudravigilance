@@ -220,6 +220,8 @@ def _process_normalized_file(
         file_hash=file_hash,
     )
     total_rows = sum(counts.values())
+    if errors:
+        return False, f"Loaded {total_rows} rows but encountered {len(errors)} parsing errors."
     return True, f"Loaded {total_rows} rows into normalized schema."
 
 

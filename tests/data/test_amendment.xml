@@ -11,7 +11,8 @@
     <safetyreport>
       <safetyreportversion>2</safetyreportversion>
       <safetyreportid>TEST-SCENARIO-01</safetyreportid>
-      <primarysourcecountry>US</primarysourcecountry>
+      <!-- This field is changed from US to CA to test the update -->
+      <primarysourcecountry>CA</primarysourcecountry>
       <occurcountry>US</occurcountry>
       <transmissiondateformat>204</transmissiondateformat>
       <transmissiondate>20250102</transmissiondate>

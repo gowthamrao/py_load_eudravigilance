@@ -61,6 +61,7 @@ pytest-cov = ">=4.1.0"
 testcontainers = {version = ">=3.7.1", extras = ["postgres"]}
 mkdocs = ">=1.5.3"
 mkdocs-material = ">=9.4.6"
+deprecation = ">=2.1.0"
 
 
 [build-system]
@@ -76,3 +77,6 @@ line-length = 88
 
 [tool.isort]
 profile = "black"
+
+[tool.pytest.ini_options]
+addopts = "--cov=src/py_load_eudravigilance --cov-report=term-missing --cov-report=html"

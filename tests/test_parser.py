@@ -36,9 +36,9 @@ def test_parse_icsr_xml_with_nested_data():
     assert case1["receiveridentifier"] == "TESTRECEIVER"
     assert case1["safetyreportid"] == "TEST-CASE-001"
     assert case1["receiptdate"] == "20240101"
-    # The sample file uses <primarysourcecountry> but not <reportercountry>
-    # This tests that the parser correctly returns None if not found.
-    assert case1["reportercountry"] is None
+    # The sample file uses <primarysourcecountry>, which the parser now correctly
+    # maps to the 'reportercountry' field.
+    assert case1["reportercountry"] == "US"
     assert case1["qualification"] is None
     assert case1["patientinitials"] == "FN"
     assert case1["patientonsetage"] == "55"

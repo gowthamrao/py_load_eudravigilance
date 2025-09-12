@@ -93,8 +93,19 @@ def _parse_tests(report_elem):
 def parse_icsr_xml(
     xml_source: IO[bytes],
 ) -> Generator[Dict[str, Any] | InvalidICSRError, None, None]:
+    """
+    Parses an ICH E2B(R3) XML file and yields individual ICSRs.
+    It is designed to be resilient to errors within a single ICSR message,
+    allowing the processing of subsequent valid messages in the same file.
+    """
+    # Using recover=True allows the parser to make a best-effort attempt to
+    # continue processing even if it encounters a structural XML error within
+    # a tagged section. This prevents one bad record from failing the whole file.
     context = etree.iterparse(
-        xml_source, events=("end",), tag=f"{{{NAMESPACES['hl7']}}}ichicsrMessage"
+        xml_source,
+        events=("end",),
+        tag=f"{{{NAMESPACES['hl7']}}}ichicsrMessage",
+        recover=True,
     )
 
     for _, elem in context:
@@ -117,14 +128,15 @@ def parse_icsr_xml(
                 )
 
             nullification_text = _find_text(report_elem, ".//hl7:reportnullification")
+
+            # The primary source country is a direct child of safetyreport
+            reporter_country = _find_text(report_elem, "hl7:primarysourcecountry")
+
             primary_source_elem = report_elem.find(
                 "hl7:primarysource", namespaces=NAMESPACES
             )
-            reporter_country, qualification = None, None
+            qualification = None
             if primary_source_elem is not None:
-                reporter_country = _find_text(
-                    primary_source_elem, "hl7:reportercountry"
-                )
                 qualification = _find_text(primary_source_elem, "hl7:qualification")
 
             data = {

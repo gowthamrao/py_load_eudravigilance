@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE root [
+  <!ENTITY xxe "XXE-ATTACK">
+]>
+<ichicsrMessage xmlns="urn:hl7-org:v3">
+  <safetyreport>
+    <safetyreportid>&xxe;</safetyreportid>
+  </safetyreport>
+</ichicsrMessage>

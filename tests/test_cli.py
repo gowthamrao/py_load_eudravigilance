@@ -306,16 +306,16 @@ def test_cli_run_with_validation(postgres_container, db_engine, tmp_path):
     assert result.exit_code == 1, "CLI should fail if validation errors occur."
     assert "An error occurred during the ETL process" in result.stdout
 
-    # 5. Verify database state: only the valid file should be loaded
+    # 5. Verify that the invalid file was quarantined
+    assert (quarantine_path / "invalid_case.xml").exists()
+    assert (quarantine_path / "invalid_case.xml.meta.json").exists()
+
+    # 6. Verify that the valid file was NOT processed because the run failed.
     with db_engine.connect() as conn:
         count = conn.execute(text("SELECT COUNT(*) FROM icsr_audit_log")).scalar_one()
-        assert count == 1
-        safety_id = conn.execute(
-            text("SELECT safetyreportid FROM icsr_audit_log")
-        ).scalar_one()
-        assert safety_id == "VALID-001"
+        assert count == 0
 
-    # 6. Verify quarantine state: the invalid file should be moved
+    # 7. Verify quarantine state: the invalid file should be moved
     assert not invalid_xml_path.exists()
     quarantined_file = quarantine_path / "invalid_case.xml"
     assert quarantined_file.exists()

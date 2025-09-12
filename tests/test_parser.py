@@ -36,9 +36,9 @@ def test_parse_icsr_xml_with_nested_data():
     assert case1["receiveridentifier"] == "TESTRECEIVER"
     assert case1["safetyreportid"] == "TEST-CASE-001"
     assert case1["receiptdate"] == "20240101"
-    # The sample file uses <primarysourcecountry> but not <reportercountry>
-    # This tests that the parser correctly returns None if not found.
-    assert case1["reportercountry"] is None
+    # The sample file uses <primarysourcecountry>, which the parser now correctly
+    # maps to the 'reportercountry' field.
+    assert case1["reportercountry"] == "US"
     assert case1["qualification"] is None
     assert case1["patientinitials"] == "FN"
     assert case1["patientonsetage"] == "55"
@@ -205,14 +205,42 @@ def test_validate_xml_uses_streaming_parser(tmp_path):
         with open(xml_file, "rb") as f:
             validate_xml_with_xsd(f, str(xsd_file))
 
-        # 1. Assert that `etree.parse` was called for the XSD file.
-        mock_etree_parse.assert_called_once_with(str(xsd_file))
+        # 1. Assert that `etree.parse` was called for the XSD file, with a secure parser.
+        # The first call to the mock is for the XSD.
+        args, kwargs = mock_etree_parse.call_args_list[0]
+        assert args[0] == str(xsd_file)
+        # We can't directly check resolve_entities, but we can check if a parser was passed
+        assert isinstance(args[1], type(etree.XMLParser()))
 
-        # 2. Assert that an XMLParser was instantiated with our schema.
-        mock_xml_parser.assert_called_once()
+        # 2. Assert that an XMLParser was instantiated for the main XML file.
+        # The mock_xml_parser is used for the main XML data.
+        assert mock_xml_parser.call_count > 0
 
         # 3. Assert that the `feed` method was called on the parser instance.
         mock_parser_instance.feed.assert_called()
 
         # 4. Assert that the `close` method was called to finalize parsing.
         mock_parser_instance.close.assert_called_once()
+
+
+def test_secure_parser_is_used():
+    """
+    Verifies that parsing functions use a secure parser configuration.
+    It mocks etree.parse and checks that the parser passed to it has
+    entity resolution disabled.
+    """
+    sample_file_path = TEST_DIR / "sample_e2b.xml"
+    with patch("py_load_eudravigilance.parser.etree.iterparse") as mock_iterparse:
+        # Test parse_icsr_xml
+        with open(sample_file_path, "rb") as f:
+            list(parse_icsr_xml(f))
+
+        # Assert that etree.iterparse was called
+        mock_iterparse.assert_called()
+
+        # Get the kwargs passed to the mocked function
+        args, kwargs = mock_iterparse.call_args
+
+        # Assert that the parser has secure settings
+        assert not kwargs["resolve_entities"]
+        assert kwargs["recover"]

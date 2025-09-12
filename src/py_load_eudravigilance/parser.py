@@ -13,6 +13,30 @@ from lxml import etree
 NAMESPACES = {"hl7": "urn:hl7-org:v3"}
 
 
+def _create_secure_parser(
+    recover: bool = False, schema: etree.XMLSchema | None = None
+) -> etree.XMLParser:
+    """
+    Creates and returns a secure lxml parser configuration.
+    This parser disables entity resolution and network access to prevent
+    XML External Entity (XXE) and other related vulnerabilities.
+
+    Args:
+        recover: If True, the parser will try to recover from non-fatal
+                 errors. Defaults to False.
+        schema: An optional XMLSchema to use for validation.
+    """
+    return etree.XMLParser(
+        resolve_entities=False,
+        no_network=True,
+        dtd_validation=False,
+        load_dtd=False,
+        huge_tree=False,
+        recover=recover,
+        schema=schema,
+    )
+
+
 class InvalidICSRError(Exception):
     """Custom exception for an ICSR that fails parsing validation."""
 
@@ -93,8 +117,23 @@ def _parse_tests(report_elem):
 def parse_icsr_xml(
     xml_source: IO[bytes],
 ) -> Generator[Dict[str, Any] | InvalidICSRError, None, None]:
+    """
+    Parses an ICH E2B(R3) XML file and yields individual ICSRs.
+    It is designed to be resilient to errors within a single ICSR message,
+    allowing the processing of subsequent valid messages in the same file.
+    """
+    # Use etree.iterparse for memory efficiency, with a secure parser.
+    # The `recover=True` allows parsing to continue after errors.
     context = etree.iterparse(
-        xml_source, events=("end",), tag=f"{{{NAMESPACES['hl7']}}}ichicsrMessage"
+        xml_source,
+        events=("end",),
+        tag=f"{{{NAMESPACES['hl7']}}}ichicsrMessage",
+        recover=True,
+        resolve_entities=False,
+        no_network=True,
+        dtd_validation=False,
+        load_dtd=False,
+        huge_tree=False,
     )
 
     for _, elem in context:
@@ -117,14 +156,15 @@ def parse_icsr_xml(
                 )
 
             nullification_text = _find_text(report_elem, ".//hl7:reportnullification")
+
+            # The primary source country is a direct child of safetyreport
+            reporter_country = _find_text(report_elem, "hl7:primarysourcecountry")
+
             primary_source_elem = report_elem.find(
                 "hl7:primarysource", namespaces=NAMESPACES
             )
-            reporter_country, qualification = None, None
+            qualification = None
             if primary_source_elem is not None:
-                reporter_country = _find_text(
-                    primary_source_elem, "hl7:reportercountry"
-                )
                 qualification = _find_text(primary_source_elem, "hl7:qualification")
 
             data = {
@@ -159,11 +199,11 @@ def parse_icsr_xml(
         except Exception as e:
             yield InvalidICSRError(f"Unexpected parsing error: {e}")
         finally:
+            # Cleanup is important for memory efficiency with large files
             elem.clear()
+            # This is a memory-cleanup trick for lxml's iterparse-like loops
             while elem.getprevious() is not None:
                 del elem.getparent()[0]
-
-    del context
 
 
 def _element_to_dict(elem) -> Dict[str, Any]:
@@ -218,13 +258,12 @@ def validate_xml_with_xsd(
         - A list of validation error messages, or an empty list if valid.
     """
     try:
-        # Load the XSD schema. XSD files are assumed to be small and can be
-        # parsed into memory directly.
-        xmlschema_doc = etree.parse(xsd_path)
+        # Load the XSD schema using a secure parser.
+        xmlschema_doc = etree.parse(xsd_path, _create_secure_parser())
         xmlschema = etree.XMLSchema(xmlschema_doc)
 
-        # Create a streaming parser with the schema attached.
-        parser = etree.XMLParser(schema=xmlschema)
+        # Create a new secure parser with the schema attached for validation.
+        parser = _create_secure_parser(schema=xmlschema)
 
         # Feed the XML source to the parser in chunks.
         # This avoids loading the entire XML file into memory.
@@ -254,18 +293,23 @@ def parse_icsr_xml_for_audit(
 
     This is used for the 'Full Representation' (Audit) schema load.
     """
-    context = etree.iterparse(
-        xml_source, events=("end",), tag=f"{{{NAMESPACES['hl7']}}}ichicsrMessage"
-    )
+    # Use etree.parse with a secure parser and then iterate over the results.
+    try:
+        tree = etree.parse(xml_source, _create_secure_parser(recover=False))
+    except etree.XMLSyntaxError as e:
+        # For audit, we can still try to extract what we can, but we log
+        # the error. A better implementation might have a more robust
+        # error reporting mechanism here.
+        # For now, we'll just re-raise, as the caller should handle it.
+        raise InvalidICSRError(f"Fatal XML syntax error for audit: {e}") from e
 
-    for _, elem in context:
-        # Convert the entire element to a dictionary
-        icsr_dict = _element_to_dict(elem)
-        yield icsr_dict
-
-        # Memory cleanup
-        elem.clear()
-        while elem.getprevious() is not None:
-            del elem.getparent()[0]
-
-    del context
+    for elem in tree.iterfind(f"{{{NAMESPACES['hl7']}}}ichicsrMessage"):
+        try:
+            # Convert the entire element to a dictionary
+            icsr_dict = _element_to_dict(elem)
+            yield icsr_dict
+        finally:
+            # Memory cleanup
+            elem.clear()
+            while elem.getprevious() is not None:
+                del elem.getparent()[0]

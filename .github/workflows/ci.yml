@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Check out code
+      uses: actions/checkout@v3
+
+    - name: Build Docker image
+      run: docker build -t py-load-eudravigilance-test .
+
+    - name: Run tests in Docker container
+      run: docker run --rm -v /var/run/docker.sock:/var/run/docker.sock py-load-eudravigilance-test

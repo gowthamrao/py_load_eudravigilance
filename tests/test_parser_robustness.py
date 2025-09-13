@@ -189,3 +189,23 @@ def test_element_to_dict_with_no_namespace():
     result = _element_to_dict(root_element)
     expected = {"root": {"child": "text"}}
     assert result == expected
+
+
+def test_parse_with_repeated_singleton_element():
+    """
+    Tests that the parser correctly handles a case where an element that is
+    expected to be a singleton (like <patient>) appears multiple times.
+    The parser should only process the first instance.
+    """
+    xml_path = TEST_DIR / "data" / "repeated_singleton_element.xml"
+    with open(xml_path, "rb") as f:
+        xml_content = f.read()
+
+    results = list(parse_icsr_xml(io.BytesIO(xml_content)))
+
+    assert len(results) == 1
+    assert isinstance(results[0], dict)
+
+    # The parser should have extracted data from the *first* patient element
+    assert results[0]["patientinitials"] == "FIRST"
+    assert results[0]["patientsex"] == "1"

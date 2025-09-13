@@ -74,4 +74,4 @@ line-length = 88
 profile = "black"
 
 [tool.pytest.ini_options]
-addopts = "--cov=src/py_load_eudravigilance --cov-report=term-missing --cov-report=html"
+addopts = "--cov=src/py_load_eudravigilance --cov-report=term-missing --cov-report=html --cov-report=xml"

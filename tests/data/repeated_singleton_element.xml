@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ichicsrMessage xmlns="urn:hl7-org:v3">
+    <safetyreport>
+        <safetyreportid>TEST-REPEATED-PATIENT-01</safetyreportid>
+        <patient>
+            <patientinitials>FIRST</patientinitials>
+            <patientsex>1</patientsex>
+        </patient>
+        <patient>
+            <patientinitials>SECOND</patientinitials>
+            <patientsex>2</patientsex>
+        </patient>
+    </safetyreport>
+</ichicsrMessage>

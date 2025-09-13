@@ -41,12 +41,6 @@ postgresql = "py_load_eudravigilance.loader:PostgresLoader"
 [tool.poetry]
 packages = [{include = "py_load_eudravigilance", from = "src"}]
 
-[tool.poetry.group.postgres]
-optional = true
-
-[tool.poetry.group.postgres.dependencies]
-psycopg2-binary = ">=2.9.9"
-
 [tool.poetry.group.dev]
 optional = true
 
@@ -62,6 +56,7 @@ testcontainers = {version = ">=3.7.1", extras = ["postgres"]}
 mkdocs = ">=1.5.3"
 mkdocs-material = ">=9.4.6"
 deprecation = ">=2.1.0"
+psycopg2-binary = ">=2.9.9"
 
 
 [build-system]
